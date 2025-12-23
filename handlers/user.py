@@ -57,6 +57,13 @@ async def cmd_help(message: Message):
     await message.answer(HELP_MESSAGE, reply_markup=get_main_menu())
 
 
+@router.message(Command("status"))
+async def cmd_status(message: Message):
+    """Обработчик команды /status - информация о текущих условиях"""
+    from utils.texts import STATUS_MESSAGE
+    await message.answer(STATUS_MESSAGE, reply_markup=get_main_menu())
+
+
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
     """Обработчик команды /cancel"""
@@ -92,34 +99,28 @@ async def process_send_free_button(message: Message, state: FSMContext):
 
 @router.message(Command("send35"))
 async def cmd_send35(message: Message, state: FSMContext):
-    """Обработчик команды /send35 (пост про подики/жидкости)"""
+    """Обработчик команды /send35 (пост про подики/жидкости - временно бесплатно)"""
     async for session in get_db():
         user = await session.get(User, message.from_user.id)
         if user and user.is_banned:
             await message.answer(USER_BANNED_MESSAGE)
             return
     
-    await message.answer(
-        "💰 Пост про подики/жидкости\n\nСтоимость: 35 грн или 35 ⭐ Telegram Stars\n\nВыбери способ оплаты:",
-        reply_markup=get_payment_menu(35),
-    )
-    await state.set_state(PostStates.waiting_payment_35)
+    await message.answer(REQUEST_POST_MESSAGE, reply_markup=None)
+    await state.set_state(PostStates.waiting_ad_post)
 
 
 @router.message(lambda m: m.text == "💰 Отправить пост про подики, жидкости")
 async def process_send_35_button(message: Message, state: FSMContext):
-    """Обработчик кнопки 'Отправить пост про подики, жидкости'"""
+    """Обработчик кнопки 'Отправить пост про подики, жидкости' (временно бесплатно)"""
     async for session in get_db():
         user = await session.get(User, message.from_user.id)
         if user and user.is_banned:
             await message.answer(USER_BANNED_MESSAGE)
             return
     
-    await message.answer(
-        "💰 Пост про подики/жидкости\n\nСтоимость: 35 грн или 35 ⭐ Telegram Stars\n\nВыбери способ оплаты:",
-        reply_markup=get_payment_menu(35),
-    )
-    await state.set_state(PostStates.waiting_payment_35)
+    await message.answer(REQUEST_POST_MESSAGE, reply_markup=None)
+    await state.set_state(PostStates.waiting_ad_post)
 
 
 @router.message(Command("send50"))
@@ -170,18 +171,15 @@ async def process_send_free(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "send_35")
 async def process_send_35(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки 'Пост про подики/жидкости (35 грн)'"""
+    """Обработчик кнопки 'Пост про подики/жидкости' (временно бесплатно)"""
     async for session in get_db():
         user = await session.get(User, callback.from_user.id)
         if user and user.is_banned:
             await callback.answer(USER_BANNED_MESSAGE, show_alert=True)
             return
     
-    await callback.message.edit_text(
-        "💰 Пост про подики/жидкости\n\nСтоимость: 35 грн или 35 ⭐ Telegram Stars\n\nВыбери способ оплаты:",
-        reply_markup=get_payment_menu(35),
-    )
-    await state.set_state(PostStates.waiting_payment_35)
+    await callback.message.edit_text(REQUEST_POST_MESSAGE)
+    await state.set_state(PostStates.waiting_ad_post)
     await callback.answer()
 
 
@@ -206,6 +204,14 @@ async def process_send_50(callback: CallbackQuery, state: FSMContext):
 async def process_help(callback: CallbackQuery):
     """Обработчик кнопки 'Подробности о боте'"""
     await callback.message.edit_text(HELP_MESSAGE, reply_markup=get_main_menu())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "status")
+async def process_status(callback: CallbackQuery):
+    """Обработчик кнопки 'Текущие условия'"""
+    from utils.texts import STATUS_MESSAGE
+    await callback.message.edit_text(STATUS_MESSAGE, reply_markup=get_main_menu())
     await callback.answer()
 
 

@@ -13,8 +13,9 @@ def get_main_menu() -> InlineKeyboardMarkup:
     """Главное меню"""
     keyboard = [
         [InlineKeyboardButton(text="📝 Отправить пост в канал", callback_data="send_free")],
-        [InlineKeyboardButton(text="💰 Пост про подики/жидкости (35 грн)", callback_data="send_35")],
-        [InlineKeyboardButton(text="🎯 Пост не по тематике (50 грн)", callback_data="send_50")],
+        [InlineKeyboardButton(text="💰 Пост про подики/жидкости", callback_data="send_35")],
+        [InlineKeyboardButton(text="🎯 Пост не по тематике (50 ⭐)", callback_data="send_50")],
+        [InlineKeyboardButton(text="📊 Текущие условия", callback_data="status")],
         [InlineKeyboardButton(text="ℹ️ Подробности о боте", callback_data="help")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -24,7 +25,7 @@ def get_payment_menu(amount: int) -> InlineKeyboardMarkup:
     """Меню выбора способа оплаты"""
     keyboard = [
         [InlineKeyboardButton(text="⭐ Оплатить Stars", callback_data=f"pay_stars_{amount}")],
-        [InlineKeyboardButton(text="💳 Оплатить картой", callback_data=f"pay_stripe_{amount}")],
+        [InlineKeyboardButton(text="💳 Оплатить картой (В разработке)", callback_data=f"pay_card_dev_{amount}")],
         [InlineKeyboardButton(text="« Назад", callback_data="back_to_menu")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

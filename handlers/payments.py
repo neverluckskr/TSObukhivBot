@@ -70,59 +70,17 @@ async def process_pay_stars(callback: CallbackQuery, state: FSMContext):
         await callback.answer(PAYMENT_ERROR_MESSAGE, show_alert=True)
 
 
+@router.callback_query(F.data.startswith("pay_card_dev_"))
+async def process_pay_card_dev(callback: CallbackQuery):
+    """Обработка нажатия на кнопку 'Оплатить картой (В разработке)'"""
+    await callback.answer("💳 Оплата картой временно в разработке. Используйте Telegram Stars ⭐", show_alert=True)
+
+
 @router.callback_query(F.data.startswith("pay_stripe_"))
 async def process_pay_stripe(callback: CallbackQuery, state: FSMContext):
-    """Обработка оплаты через карту (Smart Glocal)"""
-    bot = callback.bot
-    
-    amount = int(callback.data.split("_")[2])
-    
-    # Определяем тип поста
-    current_state = await state.get_state()
-    if current_state == PostStates.waiting_payment_35:
-        post_type = "ad35"
-        post_type_name = "про подики/жидкости"
-    elif current_state == PostStates.waiting_payment_50:
-        post_type = "offtopic50"
-        post_type_name = "не по тематике"
-    else:
-        await callback.answer("❌ Ошибка состояния.", show_alert=True)
-        return
-    
-    if not settings.PROVIDER_TOKEN:
-        await callback.answer(
-            "❌ Оплата через карту временно недоступна. Используйте Telegram Stars.",
-            show_alert=True,
-        )
-        return
-    
-    # Сохраняем информацию о платеже в состоянии
-    await state.update_data(
-        post_type=post_type,
-        amount=amount,
-        payment_method="card",
-    )
-    
-    try:
-        # Создаем invoice через sendInvoice с оплатой картой
-        import time
-        payload = f"post_{post_type}_{callback.from_user.id}_{int(time.time())}"
-        
-        await bot.send_invoice(
-            chat_id=callback.from_user.id,
-            title=f"Пост в канал ({amount} грн)",
-            description=f"Оплата за пост {post_type_name} в канал «Тёмная сторона Обухова»",
-            payload=payload,
-            provider_token=settings.PROVIDER_TOKEN,  # Токен Smart Glocal
-            currency="UAH",  # Гривна
-            prices=[LabeledPrice(label=f"Пост в канал ({amount} грн)", amount=amount * 100)],  # В копейках (1 грн = 100 копеек)
-            start_parameter=payload,
-        )
-        
-        await callback.answer("💳 Счет на оплату отправлен!")
-    except Exception as e:
-        logger.error(f"Ошибка создания invoice для оплаты картой: {e}")
-        await callback.answer(PAYMENT_ERROR_MESSAGE, show_alert=True)
+    """Обработка оплаты через карту (Smart Glocal) - зарезервировано на будущее"""
+    # Эта функция больше не используется, но оставлена для совместимости
+    await callback.answer("💳 Оплата картой временно в разработке. Используйте Telegram Stars ⭐", show_alert=True)
 
 
 @router.message(lambda m: m.successful_payment is not None)
