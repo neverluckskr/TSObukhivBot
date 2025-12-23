@@ -123,8 +123,9 @@ async def approve_post(callback: CallbackQuery):
                 logger.warning(f"Не удалось отправить уведомление пользователю {post.user_id}: {e}")
             
             await callback.answer("✅ Пост одобрен и опубликован!")
+            current_text = callback.message.text or callback.message.caption or "Пост одобрен"
             await callback.message.edit_text(
-                callback.message.text + "\n\n✅ ОДОБРЕНО",
+                current_text + "\n\n✅ ОДОБРЕНО",
                 reply_markup=None,
             )
         except Exception as e:
@@ -162,8 +163,9 @@ async def reject_post(callback: CallbackQuery, state: FSMContext):
     await state.update_data(post_id=post_id)
     await state.set_state(ModerationStates.waiting_rejection_reason)
     
+    current_text = callback.message.text or callback.message.caption or "Пост отклонен"
     await callback.message.edit_text(
-        callback.message.text + "\n\n❌ ОТКЛОНЕНО\n\nВведите причину отказа:",
+        current_text + "\n\n❌ ОТКЛОНЕНО\n\nВведите причину отказа:",
         reply_markup=None,
     )
     await callback.answer("Введите причину отказа")
@@ -255,8 +257,9 @@ async def ban_user(callback: CallbackQuery):
         await session.commit()
         
         await callback.answer("✅ Пользователь забанен.", show_alert=True)
+        current_text = callback.message.text or callback.message.caption or "Пользователь"
         await callback.message.edit_text(
-            callback.message.text + "\n\n🚫 ЗАБАНЕН",
+            current_text + "\n\n🚫 ЗАБАНЕН",
             reply_markup=get_user_info_keyboard(user_id),
         )
 
@@ -277,8 +280,9 @@ async def unban_user(callback: CallbackQuery):
         await session.commit()
         
         await callback.answer("✅ Пользователь разбанен.", show_alert=True)
+        current_text = callback.message.text or callback.message.caption or "Пользователь"
         await callback.message.edit_text(
-            callback.message.text + "\n\n✅ РАЗБАНЕН",
+            current_text + "\n\n✅ РАЗБАНЕН",
             reply_markup=get_user_info_keyboard(user_id),
         )
 

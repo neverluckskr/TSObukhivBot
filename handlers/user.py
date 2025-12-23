@@ -267,6 +267,7 @@ async def receive_free_post(message: Message, state: FSMContext):
         )
         
         # Отправляем модераторам
+        sent_to_moderators = False
         for moderator_id in MODERATOR_IDS:
             try:
                 if media_file_id:
@@ -277,6 +278,7 @@ async def receive_free_post(message: Message, state: FSMContext):
                             caption=format_post_for_moderator(post, user),
                             reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
                         )
+                        sent_to_moderators = True
                     elif message.video:
                         await bot.send_video(
                             moderator_id,
@@ -284,6 +286,7 @@ async def receive_free_post(message: Message, state: FSMContext):
                             caption=format_post_for_moderator(post, user),
                             reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
                         )
+                        sent_to_moderators = True
                     else:
                         await bot.send_document(
                             moderator_id,
@@ -291,12 +294,14 @@ async def receive_free_post(message: Message, state: FSMContext):
                             caption=format_post_for_moderator(post, user),
                             reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
                         )
+                        sent_to_moderators = True
                 else:
                     await bot.send_message(
                         moderator_id,
                         format_post_for_moderator(post, user),
                         reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
                     )
+                    sent_to_moderators = True
             except Exception as e:
                 logger.warning(f"Не удалось отправить пост модератору {moderator_id}: {e}")
         
