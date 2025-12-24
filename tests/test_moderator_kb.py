@@ -24,3 +24,11 @@ def test_moderation_keyboard_owner_button():
     kb = get_moderation_keyboard(post_id=1, user_id=2, include_approve_all=False, offset=0, total=1, is_owner=True)
     texts = [btn.text for row in kb.inline_keyboard for btn in row]
     assert "➕ Добавить модератора" in texts
+
+
+def test_moderator_main_keyboard():
+    kb = get_moderator_main_keyboard(pending_posts=3, pending_requests=2, is_owner=True)
+    texts = [btn.text for row in kb.inline_keyboard for btn in row]
+    assert "📥 Посты (3)" in texts
+    assert "➕ Добавление модераторов" in texts
+    assert "📝 Одобрение заявок (2)" in texts

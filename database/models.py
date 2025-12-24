@@ -75,6 +75,21 @@ class Payment(Base):
     user = relationship("User", back_populates="payments")
 
 
+class ChatJoinRequest(Base):
+    """Модель заявки на вступление в канал"""
+    __tablename__ = "chat_join_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=False)
+    chat_id = Column(BigInteger, nullable=False)
+    username = Column(String(255), nullable=True)
+    full_name = Column(String(255), nullable=True)
+    status = Column(String(20), default="pending", server_default="pending")  # 'pending','approved','rejected'
+    moderator_id = Column(BigInteger, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, server_default=func.now())
+    handled_at = Column(DateTime, nullable=True)
+
+
 class Moderator(Base):
     """Модель модератора"""
     __tablename__ = "moderators"

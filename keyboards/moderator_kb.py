@@ -65,3 +65,23 @@ def get_user_info_keyboard(user_id: int) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+
+def get_moderator_main_keyboard(pending_posts: int = 0, pending_requests: int = 0, is_owner: bool = False) -> InlineKeyboardMarkup:
+    """Главная панель модератора с быстрыми действиями"""
+    keyboard = [
+        [
+            InlineKeyboardButton(text=f"📥 Посты ({pending_posts})", callback_data="moderator_posts"),
+            InlineKeyboardButton(text=f"📝 Одобрение заявок ({pending_requests})", callback_data="moderator_requests"),
+        ],
+        [
+            InlineKeyboardButton(text=f"➕ Добавление модераторов", callback_data="moderator_add_mods"),
+        ],
+    ]
+
+    if is_owner:
+        keyboard.append([
+            InlineKeyboardButton(text="👑 Управление модераторами (владелец)", callback_data="moderator_add_mods"),
+        ])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard) 
+

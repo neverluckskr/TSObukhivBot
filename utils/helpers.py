@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional
 
 from config import MODERATOR_IDS, OWNER_IDS
-from database.models import Post, User
+from database.models import Post, User, ChatJoinRequest
 from utils.texts import POST_TYPE_NAMES
 
 
@@ -59,4 +59,15 @@ def get_post_type_from_command(command: str) -> Optional[str]:
         "send50": "offtopic50",
     }
     return mapping.get(command)
+
+
+def format_join_request(req: ChatJoinRequest) -> str:
+    """Форматирование заявки на вступление в канал"""
+    date_str = req.created_at.strftime("%d.%m.%Y, %H:%M") if req.created_at else "Неизвестно"
+    return f"""📨 Заявка на вступление в канал
+
+От: User ID: {req.user_id}
+Username: @{req.username or 'не указан'}
+Имя: {req.full_name or 'не указано'}
+Дата: {date_str}"""
 

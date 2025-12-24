@@ -8,16 +8,16 @@ from functools import wraps
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest as TgChatJoinRequest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import CHANNEL_ID, MODERATOR_IDS, OWNER_IDS
 from database.db import get_db
-from database.models import Post, User, Moderator
-from keyboards.moderator_kb import get_moderation_keyboard, get_user_info_keyboard
+from database.models import Post, User, Moderator, ChatJoinRequest
+from keyboards.moderator_kb import get_moderation_keyboard, get_user_info_keyboard, get_moderator_main_keyboard
 from states.states import ModerationStates
-from utils.helpers import format_user_info, is_moderator, is_owner, format_post_for_moderator
+from utils.helpers import format_user_info, is_moderator, is_owner, format_post_for_moderator, format_join_request
 from utils.texts import POST_APPROVED_MESSAGE, POST_REJECTED_TEMPLATE
 
 logger = logging.getLogger(__name__)
@@ -72,51 +72,21 @@ async def cmd_stats(message: Message):
 @router.message(Command("moderator"))
 @moderator_only
 async def cmd_moderator_panel(message: Message):
-    """Панель модератора: показать первый пост и панель навигации"""
+    """Панель модератора: главное меню"""
     bot = message.bot
 
     async for session in get_db():
-        pending_posts = (await session.scalars(select(Post).filter(Post.status == "pending").order_by(Post.created_at.desc()))).all()
-        total = len(pending_posts)
+        pending_posts = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
+        pending_posts = pending_posts or 0
+        pending_requests = await session.scalar(select(func.count(ChatJoinRequest.id)).filter(ChatJoinRequest.status == "pending", ChatJoinRequest.chat_id == int(CHANNEL_ID)))
+        pending_requests = pending_requests or 0
 
-        if total == 0:
-            await message.answer("✅ Нет постов на модерации.")
-            return
-
-        post = pending_posts[0]
-        user = await session.get(User, post.user_id)
-        include_approve_all = total > 1
-
-        try:
-            if post.media_file_id:
-                try:
-                    await bot.send_photo(
-                        message.from_user.id,
-                        post.media_file_id,
-                        caption=format_post_for_moderator(post, user),
-                        reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total),
-                    )
-                except Exception:
-                    try:
-                        await bot.send_document(
-                            message.from_user.id,
-                            post.media_file_id,
-                            caption=format_post_for_moderator(post, user),
-                            reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total),
-                        )
-                    except Exception as e:
-                        logger.warning(f"Не удалось отправить модератору пост {post.post_id}: {e}")
-            else:
-                await bot.send_message(
-                    message.from_user.id,
-                    format_post_for_moderator(post, user),
-                    reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total),
-                )
-        except Exception as e:
-            logger.warning(f"Не удалось отправить модератору пост {post.post_id}: {e}")
-
-        if total > 1:
-            await message.answer(f"📋 На модерации: {total} пост(ов). Используйте кнопки ниже для навигации.")
+    is_owner = message.from_user.id in OWNER_IDS
+    kb = get_moderator_main_keyboard(pending_posts=pending_posts, pending_requests=pending_requests, is_owner=is_owner)
+    try:
+        await message.answer(f"📋 Панель модерации\n🔔 Постов на модерации: {pending_posts}\n📝 Заявок на вступление: {pending_requests}", reply_markup=kb)
+    except Exception as e:
+        logger.warning(f"Не удалось отправить панель модератора: {e}")
 
 
 @router.callback_query(F.data.startswith("approve_"))
@@ -534,6 +504,210 @@ async def unban_user(callback: CallbackQuery):
 async def noop_callback(callback: CallbackQuery):
     """Ничего не делать для декоративных кнопок"""
     await callback.answer()
+
+
+@router.callback_query(F.data == "moderator_posts")
+@moderator_only
+async def moderator_posts(callback: CallbackQuery):
+    """Показать первый пост на модерации (быстрый доступ)"""
+    bot = callback.bot
+    async for session in get_db():
+        pending_posts = (await session.scalars(select(Post).filter(Post.status == "pending").order_by(Post.created_at.desc()))).all()
+        total = len(pending_posts)
+        if total == 0:
+            await callback.answer("✅ Нет постов на модерации.", show_alert=True)
+            return
+        post = pending_posts[0]
+        user = await session.get(User, post.user_id)
+        include_approve_all = total > 1
+        is_owner = callback.from_user.id in OWNER_IDS
+
+        try:
+            if post.media_file_id:
+                try:
+                    await callback.message.edit_caption(format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total, is_owner=is_owner))
+                except Exception:
+                    try:
+                        await callback.bot.delete_message(callback.message.chat.id, callback.message.message_id)
+                    except Exception:
+                        pass
+                    try:
+                        await callback.bot.send_photo(callback.message.chat.id, post.media_file_id, caption=format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total, is_owner=is_owner))
+                    except Exception:
+                        await callback.bot.send_document(callback.message.chat.id, post.media_file_id, caption=format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total, is_owner=is_owner))
+            else:
+                try:
+                    await callback.message.edit_text(format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total, is_owner=is_owner))
+                except Exception:
+                    try:
+                        await callback.bot.delete_message(callback.message.chat.id, callback.message.message_id)
+                    except Exception:
+                        pass
+                    await callback.bot.send_message(callback.message.chat.id, format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total, is_owner=is_owner))
+        except Exception as e:
+            logger.warning(f"Не удалось показать пост: {e}")
+
+        await callback.answer()
+
+
+@router.callback_query(F.data == "moderator_add_mods")
+@moderator_only
+async def moderator_add_mods(callback: CallbackQuery):
+    """Панель управления модераторами (показывает текущих и позволяет добавить)"""
+    if not is_owner(callback.from_user.id):
+        await callback.answer("❌ Только владелец может управлять модераторами.", show_alert=True)
+        return
+
+    async for session in get_db():
+        mods = (await session.scalars(select(Moderator))).all()
+    lines = [f"ID: {m.moderator_id} — @{m.username or 'не указан'}" for m in mods]
+    text = "👥 Список модераторов:\n\n" + ("\n".join(lines) if lines else "Нет модераторов")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить модератора", callback_data="add_moderator")],
+        [InlineKeyboardButton(text="↩️ Назад", callback_data="moderator_page_0")],
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception as e:
+        logger.warning(f"Не удалось показать панель модераторов: {e}")
+
+
+@router.callback_query(F.data == "moderator_requests")
+@moderator_only
+async def moderator_requests(callback: CallbackQuery):
+    """Показать список заявок на вступление в канал"""
+    async for session in get_db():
+        pending = (await session.scalars(select(ChatJoinRequest).filter(ChatJoinRequest.status == "pending").order_by(ChatJoinRequest.created_at.desc()).limit(10))).all()
+
+    if not pending:
+        await callback.answer("📭 Нет заявок на вступление.", show_alert=True)
+        return
+
+    lines = [f"ID: {r.id} — User: {r.user_id} — @{r.username or 'не указан'} — {r.created_at.strftime('%d.%m.%Y %H:%M')}" for r in pending]
+    text = "📝 Заявки на вступление (последние):\n\n" + "\n\n".join(lines)
+
+    kb_rows = []
+    for r in pending:
+        kb_rows.append([InlineKeyboardButton(text=f"✅ Одобрить {r.id}", callback_data=f"joinreq_approve_{r.id}"), InlineKeyboardButton(text=f"❌ Отклонить {r.id}", callback_data=f"joinreq_reject_{r.id}")])
+    kb_rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data="moderator_page_0")])
+
+    try:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    except Exception as e:
+        logger.warning(f"Не удалось показать заявки: {e}")
+
+
+@router.chat_join_request()
+async def handle_chat_join_request(req: TgChatJoinRequest):
+    """Обрабатываем событие заявки на вступление в канал: сохраняем и уведомляем модераторов"""
+    # Сохраняем заявку в БД
+    user = req.from_user
+    chat = req.chat
+    async for session in get_db():
+        new_req = ChatJoinRequest(user_id=user.id, chat_id=chat.id, username=user.username, full_name=(user.full_name if hasattr(user, 'full_name') else None))
+        session.add(new_req)
+        await session.commit()
+        req_id = new_req.id
+
+    # Нотифицируем модераторов
+    mod_ids = set(MODERATOR_IDS) | set(OWNER_IDS)
+    async for session in get_db():
+        db_mods = (await session.scalars(select(Moderator))).all()
+        for m in db_mods:
+            mod_ids.add(m.moderator_id)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"joinreq_approve_{req_id}"), InlineKeyboardButton(text="❌ Отказать", callback_data=f"joinreq_reject_{req_id}")]
+    ])
+
+    text = f"📨 Заявка в канал: {user.full_name or user.username or user.id}\nID: {user.id}\nUsername: @{user.username or 'не указан'}"
+
+    for mod_id in mod_ids:
+        try:
+            await req.bot.send_message(mod_id, text, reply_markup=kb)
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data.startswith("joinreq_approve_"))
+@moderator_only
+async def joinreq_approve(callback: CallbackQuery):
+    try:
+        req_id = int(callback.data.split("_")[2])
+    except Exception:
+        await callback.answer("❌ Некорректная заявка.", show_alert=True)
+        return
+
+    async for session in get_db():
+        req = await session.get(ChatJoinRequest, req_id)
+        if not req:
+            await callback.answer("❌ Заявка не найдена.", show_alert=True)
+            return
+        if req.status != "pending":
+            await callback.answer("❌ Заявка уже обработана.", show_alert=True)
+            return
+
+        # Попытаемся одобрить в канале
+        try:
+            await callback.bot.approve_chat_join_request(int(req.chat_id), int(req.user_id))
+            req.status = "approved"
+            req.moderator_id = callback.from_user.id
+            req.handled_at = datetime.utcnow()
+            await session.commit()
+
+            try:
+                await callback.bot.send_message(req.user_id, "✅ Ваша заявка в канал одобрена.")
+            except Exception:
+                pass
+
+            await callback.answer("✅ Заявка одобрена.")
+            try:
+                await callback.message.edit_text((callback.message.text or "") + f"\n\n✅ Одобрено (Request {req_id})", reply_markup=None)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Ошибка при одобрении заявки {req_id}: {e}")
+            await callback.answer(f"❌ Ошибка при одобрении: {e}", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("joinreq_reject_"))
+@moderator_only
+async def joinreq_reject(callback: CallbackQuery):
+    try:
+        req_id = int(callback.data.split("_")[2])
+    except Exception:
+        await callback.answer("❌ Некорректная заявка.", show_alert=True)
+        return
+
+    async for session in get_db():
+        req = await session.get(ChatJoinRequest, req_id)
+        if not req:
+            await callback.answer("❌ Заявка не найдена.", show_alert=True)
+            return
+        if req.status != "pending":
+            await callback.answer("❌ Заявка уже обработана.", show_alert=True)
+            return
+
+        try:
+            await callback.bot.decline_chat_join_request(int(req.chat_id), int(req.user_id))
+            req.status = "rejected"
+            req.moderator_id = callback.from_user.id
+            req.handled_at = datetime.utcnow()
+            await session.commit()
+
+            try:
+                await callback.bot.send_message(req.user_id, "❌ Ваша заявка в канал отклонена.")
+            except Exception:
+                pass
+
+            await callback.answer("✅ Заявка отклонена.")
+            try:
+                await callback.message.edit_text((callback.message.text or "") + f"\n\n❌ Отклонено (Request {req_id})", reply_markup=None)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Ошибка при отклонении заявки {req_id}: {e}")
+            await callback.answer(f"❌ Ошибка при отклонении: {e}", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("moderator_page_"))
