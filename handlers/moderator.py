@@ -1147,14 +1147,32 @@ async def moderator_refresh(callback: CallbackQuery):
 @router.callback_query(F.data == "moderator_stats")
 @moderator_only
 async def moderator_stats_callback(callback: CallbackQuery):
-    """Показать статистику постов"""
+    """Показать статистику постов и список модераторов"""
     async for session in get_db():
+        # Статистика по постам
         total_posts = await session.scalar(select(func.count(Post.post_id)))
         pending_posts = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
         approved_posts = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "approved"))
         rejected_posts = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "rejected"))
+
+        # Статистика по пользователям
         total_users = await session.scalar(select(func.count(User.user_id)))
         banned_users = await session.scalar(select(func.count(User.user_id)).filter(User.is_banned == True))
+
+        # Список модераторов и владельцев
+        mod_ids = sorted(set(MODERATOR_IDS + OWNER_IDS))
+        mods = (await session.scalars(select(User).where(User.user_id.in_(mod_ids)))).all()
+        mods_map = {mod.user_id: mod for mod in mods}
+
+    mods_section = "👥 *Список модераторов:*\n"
+    if mod_ids:
+        for mod_id in mod_ids:
+            user = mods_map.get(mod_id)
+            username = f"@{user.username}" if user and user.username else "@не указан"
+            role_icon = "👑" if mod_id in OWNER_IDS else "🛡️"
+            mods_section += f"{role_icon} ID: `{mod_id}` — {username}\n"
+    else:
+        mods_section += "— пока пусто\n"
 
     stats_text = f"""📊 *Статистика*
 
@@ -1166,9 +1184,12 @@ async def moderator_stats_callback(callback: CallbackQuery):
 
 👥 *Пользователи:*
 ├ Всего: *{total_users or 0}*
-└ 🚫 Забанено: *{banned_users or 0}*"""
+└ 🚫 Забанено: *{banned_users or 0}*
+
+{mods_section.strip()}"""
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="moderator_stats")],
         [InlineKeyboardButton(text="↩️ Назад", callback_data="moderator_menu")]
     ])
     
