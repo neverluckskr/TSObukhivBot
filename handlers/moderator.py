@@ -63,6 +63,61 @@ async def cmd_stats(message: Message):
         await message.answer(stats_text)
 
 
+@router.message(Command("moderator"))
+@moderator_only
+async def cmd_moderator_panel(message: Message):
+    """Панель модератора: показать посты в ожидании"""
+    bot = message.bot
+
+    async for session in get_db():
+        pending_posts = (await session.scalars(select(Post).filter(Post.status == "pending"))).all()
+        total = len(pending_posts)
+
+        if total == 0:
+            await message.answer("✅ Нет постов на модерации.")
+            return
+
+        # Ограничение на количество отправляемых сообщений чтобы не спамить
+        limit = 20
+        shown = pending_posts[:limit]
+        include_approve_all = total > 1
+
+        await message.answer(f"📋 На модерации: {total} пост(ов). Отправляю последние {len(shown)}:")
+
+        for post in shown:
+            user = await session.get(User, post.user_id)
+            try:
+                if post.media_file_id:
+                    try:
+                        await bot.send_photo(
+                            message.from_user.id,
+                            post.media_file_id,
+                            caption=format_post_for_moderator(post, user),
+                            reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all),
+                        )
+                    except Exception:
+                        try:
+                            await bot.send_document(
+                                message.from_user.id,
+                                post.media_file_id,
+                                caption=format_post_for_moderator(post, user),
+                                reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all),
+                            )
+                        except Exception as e:
+                            logger.warning(f"Не удалось отправить модератору пост {post.post_id}: {e}")
+                else:
+                    await bot.send_message(
+                        message.from_user.id,
+                        format_post_for_moderator(post, user),
+                        reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all),
+                    )
+            except Exception as e:
+                logger.warning(f"Не удалось отправить модератору пост {post.post_id}: {e}")
+
+        if total > limit:
+            await message.answer(f"⚠️ Показаны только последние {limit} постов. Используйте /approve_all для массового одобрения.")
+
+
 @router.callback_query(F.data.startswith("approve_"))
 @moderator_only
 async def approve_post(callback: CallbackQuery):

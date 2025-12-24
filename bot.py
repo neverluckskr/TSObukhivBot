@@ -54,6 +54,7 @@ async def set_bot_commands():
         BotCommand(command="send35", description="Пост про подики/жидкости"),
         BotCommand(command="send50", description="Пост не по тематике (50 ⭐)"),
         BotCommand(command="status", description="Текущие условия"),
+        BotCommand(command="moderator", description="Панель модератора"),
         BotCommand(command="help", description="Помощь"),
         BotCommand(command="cancel", description="Отменить действие"),
     ]
