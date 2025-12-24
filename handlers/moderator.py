@@ -101,12 +101,17 @@ async def build_moderator_management_view():
     for profile in profiles:
         if profile["is_owner"]:
             continue
+        # Show edit and delete buttons for non-owner moderators
         kb_rows.append(
             [
                 InlineKeyboardButton(
                     text=f"✏️ Изменить ID {profile['id']}",
                     callback_data=f"edit_mod_username_{profile['id']}",
-                )
+                ),
+                InlineKeyboardButton(
+                    text=f"➖ Удалить {profile['id']}",
+                    callback_data=f"remove_mod_{profile['id']}",
+                ),
             ]
         )
     kb_rows.append([InlineKeyboardButton(text="➕ Добавить модератора", callback_data="add_moderator")])
@@ -792,40 +797,93 @@ async def edit_mod_username(callback: CallbackQuery, state: FSMContext):
     await callback.answer("Отправьте новый username модератора.")
 
 
-@router.callback_query(F.data == "moderator_requests")
+@router.callback_query(F.data.startswith("remove_mod_"))
 @moderator_only
-async def moderator_requests(callback: CallbackQuery):
-    """Показать список заявок на вступление в канал"""
-    async for session in get_db():
-        pending = (await session.scalars(select(ChatJoinRequest).filter(ChatJoinRequest.status == "pending").order_by(ChatJoinRequest.created_at.desc()).limit(10))).all()
-
-    if not pending:
-        await callback.answer("📭 Нет заявок на вступление.", show_alert=True)
+async def ask_remove_mod(callback: CallbackQuery):
+    """Попросить подтверждения удаления модератора"""
+    if not is_owner(callback.from_user.id):
+        await callback.answer("❌ Только владелец может удалять модераторов.", show_alert=True)
+        return
+    try:
+        mod_id = int(callback.data.split("_")[2])
+    except Exception:
+        await callback.answer("❌ Некорректный модератор.", show_alert=True)
         return
 
-    lines = [
-        f"ID: {r.id} — {format_user_reference(r.username, r.full_name, r.user_id)} — {r.created_at.strftime('%d.%m.%Y %H:%M')}"
-        for r in pending
-    ]
-    text = "📝 Заявки на вступление (последние):\n\n" + "\n\n".join(lines)
+    if mod_id in OWNER_IDS:
+        await callback.answer("❌ Нельзя удалять владельца.", show_alert=True)
+        return
 
-    kb_rows = []
-    for r in pending:
-        kb_rows.append([InlineKeyboardButton(text=f"✅ Одобрить {r.id}", callback_data=f"joinreq_approve_{r.id}"), InlineKeyboardButton(text=f"❌ Отклонить {r.id}", callback_data=f"joinreq_reject_{r.id}")])
-    kb_rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data="moderator_page_0")])
+    # Покажем подтверждение с кнопками
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛑 Подтвердить удаление", callback_data=f"confirm_remove_mod_{mod_id}" )],
+        [InlineKeyboardButton(text="Отмена", callback_data="moderator_add_mods")],
+    ])
+    msg_text = f"⚠️ Вы уверены, что хотите удалить модератора {format_user_reference(None, None, mod_id)}?\n\nЭто действие лишит пользователя прав модератора."
+    try:
+        await callback.message.edit_text(msg_text, reply_markup=kb, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Не удалось показать подтверждение удаления модератора {mod_id}: {e}")
+        try:
+            await callback.message.edit_text(msg_text, reply_markup=kb)
+        except Exception:
+            pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("confirm_remove_mod_"))
+@moderator_only
+async def confirm_remove_mod(callback: CallbackQuery):
+    """Удалить модератора (в БД и runtime список)"""
+    if not is_owner(callback.from_user.id):
+        await callback.answer("❌ Только владелец может удалять модераторов.", show_alert=True)
+        return
+    try:
+        mod_id = int(callback.data.split("_")[2])
+    except Exception:
+        await callback.answer("❌ Некорректный модератор.", show_alert=True)
+        return
+
+    if mod_id in OWNER_IDS:
+        await callback.answer("❌ Нельзя удалять владельца.", show_alert=True)
+        return
+
+    removed = False
+    async for session in get_db():
+        mod_entry = await session.get(Moderator, mod_id)
+        if mod_entry:
+            await session.delete(mod_entry)
+            await session.commit()
+            removed = True
 
     try:
-        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
-    except Exception as e:
-        logger.warning(f"Не удалось показать заявки: {e}")
+        if mod_id in MODERATOR_IDS:
+            MODERATOR_IDS.remove(mod_id)
+            removed = True
+    except Exception:
+        pass
 
+    # Попробуем уведомить пользователя
+    try:
+        await callback.bot.send_message(mod_id, "✅ Вас лишили прав модератора.")
+    except Exception:
+        pass
 
-@router.chat_join_request()
-async def handle_chat_join_request(req: TgChatJoinRequest):
-    """Обрабатываем событие заявки на вступление в канал: сохраняем и уведомляем модераторов"""
-    # Сохраняем заявку в БД
-    user = req.from_user
-    chat = req.chat
+    # Обновим панель управления и сообщим о результате
+    text, kb = await build_moderator_management_view()
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        try:
+            await callback.message.edit_text(text, reply_markup=kb)
+        except Exception:
+            pass
+
+    if removed:
+        logger.info(f"Модератор {mod_id} удалён владельцем {callback.from_user.id}")
+        await callback.answer("✅ Модератор удалён.")
+    else:
+        await callback.answer("ℹ️ Модератор не найден в базе/списке.", show_alert=True)
     async for session in get_db():
         new_req = ChatJoinRequest(user_id=user.id, chat_id=chat.id, username=user.username, full_name=(user.full_name if hasattr(user, 'full_name') else None))
         session.add(new_req)
