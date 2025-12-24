@@ -73,18 +73,22 @@ async def cmd_stats(message: Message):
 @moderator_only
 async def cmd_moderator_panel(message: Message):
     """Панель модератора: главное меню"""
-    bot = message.bot
-
     async for session in get_db():
         pending_posts = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
         pending_posts = pending_posts or 0
         pending_requests = await session.scalar(select(func.count(ChatJoinRequest.id)).filter(ChatJoinRequest.status == "pending", ChatJoinRequest.chat_id == int(CHANNEL_ID)))
         pending_requests = pending_requests or 0
 
-    is_owner = message.from_user.id in OWNER_IDS
-    kb = get_moderator_main_keyboard(pending_posts=pending_posts, pending_requests=pending_requests, is_owner=is_owner)
+    is_owner_user = message.from_user.id in OWNER_IDS
+    kb = get_moderator_main_keyboard(pending_posts=pending_posts, pending_requests=pending_requests, is_owner=is_owner_user)
+    
+    text = f"""📋 *Панель модерации*
+
+🔔 Постов на модерации: *{pending_posts}*
+📝 Заявок на вступление: *{pending_requests}*"""
+    
     try:
-        await message.answer(f"📋 Панель модерации\n🔔 Постов на модерации: {pending_posts}\n📝 Заявок на вступление: {pending_requests}", reply_markup=kb)
+        await message.answer(text, reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
         logger.warning(f"Не удалось отправить панель модератора: {e}")
 
@@ -510,7 +514,6 @@ async def noop_callback(callback: CallbackQuery):
 @moderator_only
 async def moderator_posts(callback: CallbackQuery):
     """Показать первый пост на модерации (быстрый доступ)"""
-    bot = callback.bot
     async for session in get_db():
         pending_posts = (await session.scalars(select(Post).filter(Post.status == "pending").order_by(Post.created_at.desc()))).all()
         total = len(pending_posts)
@@ -520,30 +523,32 @@ async def moderator_posts(callback: CallbackQuery):
         post = pending_posts[0]
         user = await session.get(User, post.user_id)
         include_approve_all = total > 1
-        is_owner = callback.from_user.id in OWNER_IDS
+        is_owner_user = callback.from_user.id in OWNER_IDS
+        kb = get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total, is_owner=is_owner_user)
+        chat_id = callback.message.chat.id
 
         try:
             if post.media_file_id:
                 try:
-                    await callback.message.edit_caption(format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total, is_owner=is_owner))
+                    await callback.message.edit_caption(format_post_for_moderator(post, user), reply_markup=kb)
                 except Exception:
                     try:
-                        await callback.bot.delete_message(callback.message.chat.id, callback.message.message_id)
+                        await callback.bot.delete_message(chat_id, callback.message.message_id)
                     except Exception:
                         pass
                     try:
-                        await callback.bot.send_photo(callback.message.chat.id, post.media_file_id, caption=format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total, is_owner=is_owner))
+                        await callback.bot.send_photo(chat_id, post.media_file_id, caption=format_post_for_moderator(post, user), reply_markup=kb)
                     except Exception:
-                        await callback.bot.send_document(callback.message.chat.id, post.media_file_id, caption=format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total, is_owner=is_owner))
+                        await callback.bot.send_document(chat_id, post.media_file_id, caption=format_post_for_moderator(post, user), reply_markup=kb)
             else:
                 try:
-                    await callback.message.edit_text(format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total, is_owner=is_owner))
+                    await callback.message.edit_text(format_post_for_moderator(post, user), reply_markup=kb)
                 except Exception:
                     try:
-                        await callback.bot.delete_message(callback.message.chat.id, callback.message.message_id)
+                        await callback.bot.delete_message(chat_id, callback.message.message_id)
                     except Exception:
                         pass
-                    await callback.bot.send_message(callback.message.chat.id, format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total, is_owner=is_owner))
+                    await callback.bot.send_message(chat_id, format_post_for_moderator(post, user), reply_markup=kb)
         except Exception as e:
             logger.warning(f"Не удалось показать пост: {e}")
 
@@ -733,16 +738,18 @@ async def moderator_page(callback: CallbackQuery):
         post = pending_posts[offset]
         user = await session.get(User, post.user_id)
         include_approve_all = total > 1
+        is_owner_user = callback.from_user.id in OWNER_IDS
 
         chat_id = callback.message.chat.id
         message_id = callback.message.message_id
+        kb = get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=offset, total=total, is_owner=is_owner_user)
 
         # Попытка отредактировать сообщение; при неудаче - удалить и отправить новое
         try:
             if post.media_file_id:
                 # Попытаемся отредактировать подпись, если это возможно
                 try:
-                    await callback.message.edit_caption(format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=offset, total=total))
+                    await callback.message.edit_caption(format_post_for_moderator(post, user), reply_markup=kb)
                 except Exception:
                     try:
                         await callback.bot.delete_message(chat_id, message_id)
@@ -750,18 +757,18 @@ async def moderator_page(callback: CallbackQuery):
                         pass
                     # Отправим как новое сообщение
                     try:
-                        await callback.bot.send_photo(chat_id, post.media_file_id, caption=format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=offset, total=total))
+                        await callback.bot.send_photo(chat_id, post.media_file_id, caption=format_post_for_moderator(post, user), reply_markup=kb)
                     except Exception:
-                        await callback.bot.send_document(chat_id, post.media_file_id, caption=format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=offset, total=total))
+                        await callback.bot.send_document(chat_id, post.media_file_id, caption=format_post_for_moderator(post, user), reply_markup=kb)
             else:
                 try:
-                    await callback.message.edit_text(format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=offset, total=total, is_owner=is_owner))
+                    await callback.message.edit_text(format_post_for_moderator(post, user), reply_markup=kb)
                 except Exception:
                     try:
                         await callback.bot.delete_message(chat_id, message_id)
                     except Exception:
                         pass
-                    await callback.bot.send_message(chat_id, format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=offset, total=total))
+                    await callback.bot.send_message(chat_id, format_post_for_moderator(post, user), reply_markup=kb)
         except Exception as e:
             logger.warning(f"Не удалось показать страницу модерации {offset}: {e}")
 
@@ -806,7 +813,7 @@ async def show_user_info(callback: CallbackQuery):
 
     text = format_user_info(user, posts_count)
     try:
-        await callback.message.edit_text(text, reply_markup=get_user_info_keyboard(user_id))
+        await callback.message.edit_text(text, reply_markup=get_user_info_keyboard(user_id, is_banned=user.is_banned))
     except Exception as e:
         logger.warning(f"Не удалось показать инфу о пользователе {user_id}: {e}")
         await callback.answer("Не удалось показать информацию. Попробуйте снова.", show_alert=True)
@@ -963,6 +970,20 @@ async def confirm_ban(callback: CallbackQuery):
         await callback.answer("Не удалось запросить подтверждение.", show_alert=True)
 
 
+@router.callback_query(F.data.startswith("confirm_unban_"))
+@moderator_only
+async def confirm_unban(callback: CallbackQuery):
+    """Попросить подтверждение разбана"""
+    user_id = int(callback.data.split("_")[2])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, разбанить", callback_data=f"unban_yes_{user_id}"), InlineKeyboardButton(text="❌ Отмена", callback_data=f"user_info_{user_id}")]
+    ])
+    try:
+        await callback.message.edit_text(f"✅ Подтвердить разбан пользователя {user_id}?", reply_markup=kb)
+    except Exception:
+        await callback.answer("Не удалось запросить подтверждение.", show_alert=True)
+
+
 @router.callback_query(F.data.startswith("ban_yes_"))
 @moderator_only
 async def ban_yes(callback: CallbackQuery):
@@ -977,7 +998,26 @@ async def ban_yes(callback: CallbackQuery):
 
     await callback.answer("✅ Пользователь забанен.", show_alert=True)
     try:
-        await callback.message.edit_text(f"🚫 Пользователь {user_id} забанен.", reply_markup=get_user_info_keyboard(user_id))
+        await callback.message.edit_text(f"🚫 Пользователь {user_id} забанен.", reply_markup=get_user_info_keyboard(user_id, is_banned=True))
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("unban_yes_"))
+@moderator_only
+async def unban_yes(callback: CallbackQuery):
+    user_id = int(callback.data.split("_")[2])
+    async for session in get_db():
+        user = await session.get(User, user_id)
+        if not user:
+            await callback.answer("❌ Пользователь не найден.", show_alert=True)
+            return
+        user.is_banned = False
+        await session.commit()
+
+    await callback.answer("✅ Пользователь разбанен.", show_alert=True)
+    try:
+        await callback.message.edit_text(f"✅ Пользователь {user_id} разбанен.", reply_markup=get_user_info_keyboard(user_id, is_banned=False))
     except Exception:
         pass
 
@@ -1046,4 +1086,95 @@ async def approve_all_yes(callback: CallbackQuery):
         await callback.message.edit_text((callback.message.text or "") + f"\n\n✅ Массово одобрено: {approved}, ❌ Ошибок: {failed}", reply_markup=None)
     except Exception:
         pass
+
+
+@router.callback_query(F.data == "moderator_menu")
+@moderator_only
+async def moderator_menu(callback: CallbackQuery):
+    """Вернуться в главное меню модератора"""
+    async for session in get_db():
+        pending_posts = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
+        pending_posts = pending_posts or 0
+        pending_requests = await session.scalar(select(func.count(ChatJoinRequest.id)).filter(ChatJoinRequest.status == "pending", ChatJoinRequest.chat_id == int(CHANNEL_ID)))
+        pending_requests = pending_requests or 0
+
+    is_owner_user = callback.from_user.id in OWNER_IDS
+    kb = get_moderator_main_keyboard(pending_posts=pending_posts, pending_requests=pending_requests, is_owner=is_owner_user)
+    
+    text = f"""📋 *Панель модерации*
+
+🔔 Постов на модерации: *{pending_posts}*
+📝 Заявок на вступление: *{pending_requests}*"""
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        try:
+            await callback.bot.delete_message(callback.message.chat.id, callback.message.message_id)
+        except Exception:
+            pass
+        await callback.bot.send_message(callback.message.chat.id, text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "moderator_refresh")
+@moderator_only
+async def moderator_refresh(callback: CallbackQuery):
+    """Обновить панель модератора"""
+    async for session in get_db():
+        pending_posts = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
+        pending_posts = pending_posts or 0
+        pending_requests = await session.scalar(select(func.count(ChatJoinRequest.id)).filter(ChatJoinRequest.status == "pending", ChatJoinRequest.chat_id == int(CHANNEL_ID)))
+        pending_requests = pending_requests or 0
+
+    is_owner_user = callback.from_user.id in OWNER_IDS
+    kb = get_moderator_main_keyboard(pending_posts=pending_posts, pending_requests=pending_requests, is_owner=is_owner_user)
+    
+    text = f"""📋 *Панель модерации*
+
+🔔 Постов на модерации: *{pending_posts}*
+📝 Заявок на вступление: *{pending_requests}*
+
+🔄 _Обновлено_"""
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Не удалось обновить панель: {e}")
+    await callback.answer("🔄 Обновлено")
+
+
+@router.callback_query(F.data == "moderator_stats")
+@moderator_only
+async def moderator_stats_callback(callback: CallbackQuery):
+    """Показать статистику постов"""
+    async for session in get_db():
+        total_posts = await session.scalar(select(func.count(Post.post_id)))
+        pending_posts = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
+        approved_posts = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "approved"))
+        rejected_posts = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "rejected"))
+        total_users = await session.scalar(select(func.count(User.user_id)))
+        banned_users = await session.scalar(select(func.count(User.user_id)).filter(User.is_banned == True))
+
+    stats_text = f"""📊 *Статистика*
+
+📄 *Посты:*
+├ Всего: *{total_posts or 0}*
+├ ⏳ На модерации: *{pending_posts or 0}*
+├ ✅ Одобрено: *{approved_posts or 0}*
+└ ❌ Отклонено: *{rejected_posts or 0}*
+
+👥 *Пользователи:*
+├ Всего: *{total_users or 0}*
+└ 🚫 Забанено: *{banned_users or 0}*"""
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↩️ Назад", callback_data="moderator_menu")]
+    ])
+    
+    try:
+        await callback.message.edit_text(stats_text, reply_markup=kb, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Не удалось показать статистику: {e}")
+    await callback.answer()
 

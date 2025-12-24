@@ -43,7 +43,7 @@ dp = Dispatcher(storage=MemoryStorage())
 
 # URL для авто-пинга (чтобы бот не засыпал)
 PING_URL = "https://self-ping-guardian.vercel.app/health"
-PING_INTERVAL = 300  # 5 минут (300 секунд)
+PING_INTERVAL = 450  # 5 минут (300 секунд)
 
 
 async def set_bot_commands():
