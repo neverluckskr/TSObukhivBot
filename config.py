@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     
     # Модераторы (через запятую, user_id)
     MODERATORS: str = ""
+    # Владельцы бота (через запятую, user_id). По умолчанию добавлен один владелец (ID указан по запросу).
+    OWNERS: str = "1716175980"
     
     # Smart Glocal (для оплаты картой через Telegram)
     PROVIDER_TOKEN: Optional[str] = None  # Токен провайдера от Smart Glocal Bot
@@ -46,6 +48,13 @@ MODERATOR_IDS = [
     for mod_id in settings.MODERATORS.split(",") 
     if mod_id.strip().isdigit()
 ] if settings.MODERATORS else []
+
+# Парсим список владельцев
+OWNER_IDS = [
+    int(owner_id.strip())
+    for owner_id in settings.OWNERS.split(",")
+    if owner_id.strip().isdigit()
+] if settings.OWNERS else []
 
 # Экспортируем для удобства
 CHANNEL_ID = settings.CHANNEL_ID

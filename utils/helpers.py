@@ -4,14 +4,19 @@
 from datetime import datetime
 from typing import Optional
 
-from config import MODERATOR_IDS
+from config import MODERATOR_IDS, OWNER_IDS
 from database.models import Post, User
 from utils.texts import POST_TYPE_NAMES
 
 
 def is_moderator(user_id: int) -> bool:
-    """Проверка, является ли пользователь модератором"""
+    """Проверка, является ли пользователь модератором (статическая проверка по env)."""
     return user_id in MODERATOR_IDS
+
+
+def is_owner(user_id: int) -> bool:
+    """Проверка, является ли пользователь владельцем бота."""
+    return user_id in OWNER_IDS
 
 
 def format_post_for_moderator(post: Post, user: User) -> str:

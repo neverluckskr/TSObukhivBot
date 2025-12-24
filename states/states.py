@@ -24,4 +24,6 @@ class ModerationStates(StatesGroup):
     waiting_rejection_reason = State()
     # Ожидание отредактированного контента от модератора
     waiting_edit_content = State()
+    # Ожидание ввода ID нового модератора (владелец добавляет модератора)
+    waiting_new_moderator = State()
 

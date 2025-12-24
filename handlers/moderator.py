@@ -8,16 +8,16 @@ from functools import wraps
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import CHANNEL_ID, MODERATOR_IDS
+from config import CHANNEL_ID, MODERATOR_IDS, OWNER_IDS
 from database.db import get_db
-from database.models import Post, User
+from database.models import Post, User, Moderator
 from keyboards.moderator_kb import get_moderation_keyboard, get_user_info_keyboard
 from states.states import ModerationStates
-from utils.helpers import format_user_info, is_moderator
+from utils.helpers import format_user_info, is_moderator, is_owner, format_post_for_moderator
 from utils.texts import POST_APPROVED_MESSAGE, POST_REJECTED_TEMPLATE
 
 logger = logging.getLogger(__name__)
@@ -32,11 +32,17 @@ def moderator_only(func):
         user_id = message_or_callback.from_user.id if hasattr(message_or_callback, 'from_user') else message_or_callback.message.from_user.id
         
         if not is_moderator(user_id):
-            if isinstance(message_or_callback, CallbackQuery):
-                await message_or_callback.answer("❌ У тебя нет прав модератора.", show_alert=True)
-            else:
-                await message_or_callback.answer("❌ У тебя нет прав модератора.")
-            return
+            # Проверим БД на наличие модератора (динамически добавляемых)
+            async for session in get_db():
+                mod = await session.get(Moderator, user_id)
+                if not mod:
+                    if isinstance(message_or_callback, CallbackQuery):
+                        await message_or_callback.answer("❌ У тебя нет прав модератора.", show_alert=True)
+                    else:
+                        await message_or_callback.answer("❌ У тебя нет прав модератора.")
+                    return
+                # если есть запись в БД — разрешаем
+                break
         
         return await func(*args, **kwargs)
     return wrapper
@@ -66,56 +72,51 @@ async def cmd_stats(message: Message):
 @router.message(Command("moderator"))
 @moderator_only
 async def cmd_moderator_panel(message: Message):
-    """Панель модератора: показать посты в ожидании"""
+    """Панель модератора: показать первый пост и панель навигации"""
     bot = message.bot
 
     async for session in get_db():
-        pending_posts = (await session.scalars(select(Post).filter(Post.status == "pending"))).all()
+        pending_posts = (await session.scalars(select(Post).filter(Post.status == "pending").order_by(Post.created_at.desc()))).all()
         total = len(pending_posts)
 
         if total == 0:
             await message.answer("✅ Нет постов на модерации.")
             return
 
-        # Ограничение на количество отправляемых сообщений чтобы не спамить
-        limit = 20
-        shown = pending_posts[:limit]
+        post = pending_posts[0]
+        user = await session.get(User, post.user_id)
         include_approve_all = total > 1
 
-        await message.answer(f"📋 На модерации: {total} пост(ов). Отправляю последние {len(shown)}:")
-
-        for post in shown:
-            user = await session.get(User, post.user_id)
-            try:
-                if post.media_file_id:
+        try:
+            if post.media_file_id:
+                try:
+                    await bot.send_photo(
+                        message.from_user.id,
+                        post.media_file_id,
+                        caption=format_post_for_moderator(post, user),
+                        reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total),
+                    )
+                except Exception:
                     try:
-                        await bot.send_photo(
+                        await bot.send_document(
                             message.from_user.id,
                             post.media_file_id,
                             caption=format_post_for_moderator(post, user),
-                            reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all),
+                            reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total),
                         )
-                    except Exception:
-                        try:
-                            await bot.send_document(
-                                message.from_user.id,
-                                post.media_file_id,
-                                caption=format_post_for_moderator(post, user),
-                                reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all),
-                            )
-                        except Exception as e:
-                            logger.warning(f"Не удалось отправить модератору пост {post.post_id}: {e}")
-                else:
-                    await bot.send_message(
-                        message.from_user.id,
-                        format_post_for_moderator(post, user),
-                        reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all),
-                    )
-            except Exception as e:
-                logger.warning(f"Не удалось отправить модератору пост {post.post_id}: {e}")
+                    except Exception as e:
+                        logger.warning(f"Не удалось отправить модератору пост {post.post_id}: {e}")
+            else:
+                await bot.send_message(
+                    message.from_user.id,
+                    format_post_for_moderator(post, user),
+                    reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=0, total=total),
+                )
+        except Exception as e:
+            logger.warning(f"Не удалось отправить модератору пост {post.post_id}: {e}")
 
-        if total > limit:
-            await message.answer(f"⚠️ Показаны только последние {limit} постов. Используйте /approve_all для массового одобрения.")
+        if total > 1:
+            await message.answer(f"📋 На модерации: {total} пост(ов). Используйте кнопки ниже для навигации.")
 
 
 @router.callback_query(F.data.startswith("approve_"))
@@ -288,6 +289,63 @@ async def edit_post(callback: CallbackQuery, state: FSMContext):
     await callback.answer("Отправьте новый текст и/или медиа для поста.")
 
 
+@router.message(ModerationStates.waiting_new_moderator)
+@moderator_only
+async def receive_new_moderator(message: Message, state: FSMContext):
+    """Получаем от владельца ID нового модератора (или пересланное сообщение) и сохраняем в БД"""
+    if not is_owner(message.from_user.id):
+        await message.answer("❌ Только владелец может выполнять это действие.")
+        await state.clear()
+        return
+
+    user_id = None
+    username = None
+    if message.forward_from:
+        user_id = message.forward_from.id
+        username = message.forward_from.username
+    else:
+        text = (message.text or "").strip()
+        if text.isdigit():
+            user_id = int(text)
+        else:
+            await message.answer("❌ Укажите числовой user_id или перешлите сообщение от пользователя.")
+            return
+
+    async for session in get_db():
+        existing = await session.get(Moderator, user_id)
+        if existing:
+            await message.answer("❌ Пользователь уже является модератором.")
+            await state.clear()
+            return
+
+        # Создаём запись модератора
+        new_mod = Moderator(moderator_id=user_id, username=username)
+        session.add(new_mod)
+
+        # Если пользователя нет в таблице users — создаём запись (чтобы корректно считать посты и инфу)
+        user = await session.get(User, user_id)
+        if not user:
+            new_user = User(user_id=user_id, username=username)
+            session.add(new_user)
+
+        await session.commit()
+
+    # Обновим runtime-список MODERATOR_IDS (чтобы is_moderator работал без перезапуска)
+    try:
+        if user_id not in MODERATOR_IDS:
+            MODERATOR_IDS.append(user_id)
+    except Exception:
+        pass
+
+    try:
+        await message.bot.send_message(user_id, "✅ Вы добавлены модератором.")
+    except Exception:
+        pass
+
+    await message.answer(f"✅ Пользователь {user_id} добавлен как модератор.")
+    await state.clear()
+
+
 @router.message(ModerationStates.waiting_edit_content)
 @moderator_only
 async def receive_edited_content(message: Message, state: FSMContext):
@@ -340,6 +398,7 @@ async def receive_edited_content(message: Message, state: FSMContext):
             pending_count = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
             include_approve_all = (pending_count or 0) > 1
 
+            is_owner = message.from_user.id in OWNER_IDS
             if post.media_file_id:
                 # Если есть медиа — пробуем отправить как фото, иначе как документ
                 try:
@@ -347,20 +406,20 @@ async def receive_edited_content(message: Message, state: FSMContext):
                         chat_id,
                         post.media_file_id,
                         caption=format_post_for_moderator(post, user),
-                        reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all),
+                        reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, is_owner=is_owner),
                     )
                 except Exception:
                     await message.bot.send_document(
                         chat_id,
                         post.media_file_id,
                         caption=format_post_for_moderator(post, user),
-                        reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all),
+                        reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, is_owner=is_owner),
                     )
             else:
                 await message.bot.send_message(
                     chat_id,
                     format_post_for_moderator(post, user),
-                    reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all),
+                    reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, is_owner=is_owner),
                 )
         except Exception as e:
             logger.warning(f"Не удалось отправить модератору обновлённый пост: {e}")
@@ -467,4 +526,350 @@ async def unban_user(callback: CallbackQuery):
             current_text + "\n\n✅ РАЗБАНЕН",
             reply_markup=get_user_info_keyboard(user_id),
         )
+
+
+# --- Новые обработчики: пагинация, пользовательская инфа, подтверждения ---
+@router.callback_query(F.data == "noop")
+@moderator_only
+async def noop_callback(callback: CallbackQuery):
+    """Ничего не делать для декоративных кнопок"""
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("moderator_page_"))
+@moderator_only
+async def moderator_page(callback: CallbackQuery):
+    """Показать пост по номеру страницы (offset)"""
+    try:
+        offset = int(callback.data.split("_")[2])
+    except Exception:
+        await callback.answer("❌ Некорректная страница.", show_alert=True)
+        return
+
+    async for session in get_db():
+        pending_posts = (await session.scalars(select(Post).filter(Post.status == "pending").order_by(Post.created_at.desc()))).all()
+        total = len(pending_posts)
+        if total == 0:
+            await callback.answer("✅ Нет постов на модерации.", show_alert=True)
+            return
+        if offset < 0 or offset >= total:
+            await callback.answer("❌ Страница вне диапазона.", show_alert=True)
+            return
+
+        post = pending_posts[offset]
+        user = await session.get(User, post.user_id)
+        include_approve_all = total > 1
+
+        chat_id = callback.message.chat.id
+        message_id = callback.message.message_id
+
+        # Попытка отредактировать сообщение; при неудаче - удалить и отправить новое
+        try:
+            if post.media_file_id:
+                # Попытаемся отредактировать подпись, если это возможно
+                try:
+                    await callback.message.edit_caption(format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=offset, total=total))
+                except Exception:
+                    try:
+                        await callback.bot.delete_message(chat_id, message_id)
+                    except Exception:
+                        pass
+                    # Отправим как новое сообщение
+                    try:
+                        await callback.bot.send_photo(chat_id, post.media_file_id, caption=format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=offset, total=total))
+                    except Exception:
+                        await callback.bot.send_document(chat_id, post.media_file_id, caption=format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=offset, total=total))
+            else:
+                try:
+                    await callback.message.edit_text(format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=offset, total=total, is_owner=is_owner))
+                except Exception:
+                    try:
+                        await callback.bot.delete_message(chat_id, message_id)
+                    except Exception:
+                        pass
+                    await callback.bot.send_message(chat_id, format_post_for_moderator(post, user), reply_markup=get_moderation_keyboard(post.post_id, user.user_id, include_approve_all=include_approve_all, offset=offset, total=total))
+        except Exception as e:
+            logger.warning(f"Не удалось показать страницу модерации {offset}: {e}")
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "add_moderator")
+@moderator_only
+async def add_moderator(callback: CallbackQuery, state: FSMContext):
+    """Начинает добавление нового модератора (только для владельца)"""
+    if not is_owner(callback.from_user.id):
+        await callback.answer("❌ Только владелец бота может добавлять модераторов.", show_alert=True)
+        return
+
+    await state.set_state(ModerationStates.waiting_new_moderator)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="moderator_page_0")]
+    ])
+    try:
+        await callback.message.edit_text("➕ Отправьте user_id пользователя или перешлите любое его сообщение, чтобы добавить модератора.", reply_markup=kb)
+    except Exception:
+        await callback.answer("Не удалось показать запрос. Попробуйте снова.", show_alert=True)
+    await callback.answer("Отправьте ID или перешлите сообщение пользователя.")
+
+
+@router.callback_query(F.data.startswith("user_info_"))
+@moderator_only
+async def show_user_info(callback: CallbackQuery):
+    """Показать информацию о пользователе"""
+    try:
+        user_id = int(callback.data.split("_")[2])
+    except Exception:
+        await callback.answer("❌ Некорректный пользователь.", show_alert=True)
+        return
+
+    async for session in get_db():
+        user = await session.get(User, user_id)
+        if not user:
+            await callback.answer("❌ Пользователь не найден.", show_alert=True)
+            return
+        posts_count = await session.scalar(select(func.count(Post.post_id)).filter(Post.user_id == user_id))
+
+    text = format_user_info(user, posts_count)
+    try:
+        await callback.message.edit_text(text, reply_markup=get_user_info_keyboard(user_id))
+    except Exception as e:
+        logger.warning(f"Не удалось показать инфу о пользователе {user_id}: {e}")
+        await callback.answer("Не удалось показать информацию. Попробуйте снова.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("user_posts_"))
+@moderator_only
+async def show_user_posts(callback: CallbackQuery):
+    """Показать список постов пользователя (страницы по 5)"""
+    parts = callback.data.split("_")
+    if len(parts) < 4:
+        await callback.answer("❌ Некорректный запрос.", show_alert=True)
+        return
+    try:
+        user_id = int(parts[2])
+        page = int(parts[3])
+    except Exception:
+        await callback.answer("❌ Некорректные параметры.", show_alert=True)
+        return
+
+    page_size = 5
+    offset = page * page_size
+
+    async for session in get_db():
+        total_posts = await session.scalar(select(func.count(Post.post_id)).filter(Post.user_id == user_id))
+        posts = (await session.scalars(select(Post).filter(Post.user_id == user_id).order_by(Post.created_at.desc()).offset(offset).limit(page_size))).all()
+
+    if not posts:
+        await callback.answer("📄 Постов не найдено на этой странице.", show_alert=True)
+        return
+
+    lines = [f"📄 Пост ID: {p.post_id} — {p.status} — {p.created_at.strftime('%d.%m.%Y %H:%M')}\n{(p.content[:200] + '...') if len(p.content) > 200 else p.content}" for p in posts]
+    text = f"📋 Посты пользователя {user_id} (страница {page + 1})\n\n" + "\n\n".join(lines)
+
+    # Кнопки: просмотр конкретного поста и навигация
+    keyboard = []
+    for p in posts:
+        keyboard.append([InlineKeyboardButton(text=f"Посмотреть {p.post_id}", callback_data=f"view_post_{p.post_id}")])
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text="◀️", callback_data=f"user_posts_{user_id}_{page - 1}"))
+    nav_row.append(InlineKeyboardButton(text=f"{page + 1}/{(total_posts + page_size - 1)//page_size}", callback_data="noop"))
+    if offset + page_size < (total_posts or 0):
+        nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"user_posts_{user_id}_{page + 1}"))
+    keyboard.append(nav_row)
+    keyboard.append([InlineKeyboardButton(text="↩️ Назад", callback_data=f"user_info_{user_id}")])
+
+    try:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    except Exception as e:
+        logger.warning(f"Не удалось показать посты пользователя {user_id}: {e}")
+        await callback.answer("Не удалось показать посты. Попробуйте снова.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("view_post_"))
+@moderator_only
+async def view_post(callback: CallbackQuery):
+    """Показать единичный пост (полный) по id"""
+    try:
+        post_id = int(callback.data.split("_")[2])
+    except Exception:
+        await callback.answer("❌ Некорректный пост.", show_alert=True)
+        return
+
+    async for session in get_db():
+        post = await session.get(Post, post_id)
+        if not post:
+            await callback.answer("❌ Пост не найден.", show_alert=True)
+            return
+        user = await session.get(User, post.user_id)
+
+    text = format_post_for_moderator(post, user)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"delete_post_{post.post_id}"), InlineKeyboardButton(text="↩️ Назад", callback_data=f"user_posts_{post.user_id}_0")]
+    ])
+
+    try:
+        if post.media_file_id:
+            try:
+                await callback.message.edit_caption(text, reply_markup=kb)
+            except Exception:
+                try:
+                    await callback.bot.delete_message(callback.message.chat.id, callback.message.message_id)
+                except Exception:
+                    pass
+                try:
+                    await callback.bot.send_photo(callback.message.chat.id, post.media_file_id, caption=text, reply_markup=kb)
+                except Exception:
+                    await callback.bot.send_document(callback.message.chat.id, post.media_file_id, caption=text, reply_markup=kb)
+        else:
+            await callback.message.edit_text(text, reply_markup=kb)
+    except Exception as e:
+        logger.warning(f"Не удалось показать пост {post_id}: {e}")
+        await callback.answer("Не удалось показать пост. Попробуйте снова.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("delete_post_"))
+@moderator_only
+async def delete_post(callback: CallbackQuery):
+    """Удалить пост из базы (модератор)"""
+    try:
+        post_id = int(callback.data.split("_")[2])
+    except Exception:
+        await callback.answer("❌ Некорректный пост.", show_alert=True)
+        return
+
+    async for session in get_db():
+        post = await session.get(Post, post_id)
+        if not post:
+            await callback.answer("❌ Пост не найден.", show_alert=True)
+            return
+        user_id = post.user_id
+        await session.delete(post)
+        await session.commit()
+
+    await callback.answer("✅ Пост удалён.", show_alert=True)
+    try:
+        await callback.message.edit_text((callback.message.text or "") + "\n\n🗑️ Удалён модератором", reply_markup=get_user_info_keyboard(user_id))
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("warn_user_"))
+@moderator_only
+async def warn_user(callback: CallbackQuery):
+    """Отправить предупреждение пользователю (по умолчанию)"""
+    try:
+        user_id = int(callback.data.split("_")[2])
+    except Exception:
+        await callback.answer("❌ Некорректный пользователь.", show_alert=True)
+        return
+
+    try:
+        await callback.bot.send_message(user_id, "⚠️ Вам отправлено предупреждение от модерации. Пожалуйста, ознакомьтесь с правилами.")
+        await callback.answer("✅ Пользователь уведомлён.", show_alert=True)
+        await callback.message.edit_text((callback.message.text or "") + f"\n\n⚠️ Пользователь {user_id} предупреждён.", reply_markup=get_user_info_keyboard(user_id))
+    except Exception as e:
+        logger.warning(f"Не удалось отправить предупреждение пользователю {user_id}: {e}")
+        await callback.answer("Не удалось отправить предупреждение.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("confirm_ban_"))
+@moderator_only
+async def confirm_ban(callback: CallbackQuery):
+    """Попросить подтверждение бана"""
+    user_id = int(callback.data.split("_")[2])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, забанить", callback_data=f"ban_yes_{user_id}"), InlineKeyboardButton(text="❌ Отмена", callback_data=f"user_info_{user_id}")]
+    ])
+    try:
+        await callback.message.edit_text(f"🚫 Подтвердить бан пользователя {user_id}?", reply_markup=kb)
+    except Exception:
+        await callback.answer("Не удалось запросить подтверждение.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("ban_yes_"))
+@moderator_only
+async def ban_yes(callback: CallbackQuery):
+    user_id = int(callback.data.split("_")[2])
+    async for session in get_db():
+        user = await session.get(User, user_id)
+        if not user:
+            await callback.answer("❌ Пользователь не найден.", show_alert=True)
+            return
+        user.is_banned = True
+        await session.commit()
+
+    await callback.answer("✅ Пользователь забанен.", show_alert=True)
+    try:
+        await callback.message.edit_text(f"🚫 Пользователь {user_id} забанен.", reply_markup=get_user_info_keyboard(user_id))
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "confirm_approve_all")
+@moderator_only
+async def confirm_approve_all(callback: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Одобрить всё", callback_data="approve_all_yes"), InlineKeyboardButton(text="❌ Отмена", callback_data="moderator_page_0")]
+    ])
+    try:
+        await callback.message.edit_text("⚠️ Вы уверены, что хотите одобрить все посты?", reply_markup=kb)
+    except Exception:
+        await callback.answer("Не удалось запросить подтверждение.", show_alert=True)
+
+
+@router.callback_query(F.data == "approve_all_yes")
+@moderator_only
+async def approve_all_yes(callback: CallbackQuery):
+    # Реализуем массовое одобрение (взято из существующей логики)
+    bot = callback.bot
+    approved = 0
+    failed = 0
+
+    async for session in get_db():
+        pending_posts = (await session.scalars(select(Post).filter(Post.status == "pending").order_by(Post.created_at.asc()))).all()
+        for post in pending_posts:
+            try:
+                if post.media_file_id:
+                    try:
+                        sent_message = await bot.send_photo(
+                            CHANNEL_ID,
+                            post.media_file_id,
+                            caption=post.content,
+                        )
+                    except Exception:
+                        sent_message = await bot.send_document(
+                            CHANNEL_ID,
+                            post.media_file_id,
+                            caption=post.content,
+                        )
+                else:
+                    sent_message = await bot.send_message(
+                        CHANNEL_ID,
+                        post.content,
+                    )
+
+                post.channel_message_id = sent_message.message_id
+                post.status = "approved"
+                post.moderated_at = datetime.utcnow()
+                post.moderator_id = callback.from_user.id
+                await session.commit()
+
+                try:
+                    await bot.send_message(post.user_id, POST_APPROVED_MESSAGE)
+                except Exception:
+                    pass
+
+                approved += 1
+            except Exception as e:
+                logger.error(f"Ошибка при массовом одобрении поста {post.post_id}: {e}")
+                failed += 1
+
+    await callback.answer(f"✅ Одобрено: {approved}\n❌ Ошибок: {failed}", show_alert=True)
+    try:
+        await callback.message.edit_text((callback.message.text or "") + f"\n\n✅ Массово одобрено: {approved}, ❌ Ошибок: {failed}", reply_markup=None)
+    except Exception:
+        pass
 
