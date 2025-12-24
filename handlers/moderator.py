@@ -39,7 +39,10 @@ def normalize_username(value: str | None) -> str | None:
 def format_username_display(value: str | None) -> str:
     """Отформатировать username для отображения"""
     normalized = normalize_username(value)
-    return f"@{normalized}" if normalized else "@не указан"
+    handle = f"@{normalized}" if normalized else "@не указан"
+    # Escape potential markdown characters in usernames
+    from utils.helpers import escape_markdown as _escape_md  # local import to avoid cyclic issues
+    return _escape_md(handle)
 
 
 def format_user_reference(username: str | None, full_name: str | None, user_id: int) -> str:
@@ -48,7 +51,9 @@ def format_user_reference(username: str | None, full_name: str | None, user_id: 
     if handle != "@не указан":
         return handle
     if full_name:
-        return f"{full_name} (ID: {user_id})"
+        from utils.helpers import escape_markdown as _escape_md  # local import to avoid cyclic issues
+        # Escape full name to prevent Markdown issues
+        return f"{_escape_md(full_name)} (ID: {user_id})"
     return f"ID: {user_id}"
 
 
@@ -488,7 +493,7 @@ async def receive_moderator_username(message: Message, state: FSMContext):
             await message.bot.edit_message_text(text, manage_chat_id, manage_message_id, reply_markup=kb, parse_mode="Markdown")
         except Exception:
             try:
-                await message.bot.send_message(manage_chat_id, text, reply_markup=kb, parse_mode="Markdown")
+                await message.bot.send_message(manage_chat_id, text, reply_markup=kb)
             except Exception:
                 pass
     await state.clear()
@@ -742,6 +747,10 @@ async def moderator_add_mods(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
         logger.warning(f"Не удалось показать панель модераторов: {e}")
+        try:
+            await callback.message.edit_text(text, reply_markup=kb)
+        except Exception as ex2:
+            logger.warning(f"Повторная отправка панели модераторов без парсинга не удалась: {ex2}")
     await callback.answer()
 
 
@@ -1503,5 +1512,9 @@ async def moderator_stats_callback(callback: CallbackQuery):
         await callback.message.edit_text(stats_text, reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
         logger.warning(f"Не удалось показать статистику: {e}")
+        try:
+            await callback.message.edit_text(stats_text, reply_markup=kb)
+        except Exception as ex2:
+            logger.warning(f"Повторная отправка статистики без парсинга не удалась: {ex2}")
     await callback.answer()
 

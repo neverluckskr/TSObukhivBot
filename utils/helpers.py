@@ -8,6 +8,30 @@ from config import MODERATOR_IDS, OWNER_IDS
 from database.models import Post, User, ChatJoinRequest
 from utils.texts import POST_TYPE_NAMES
 
+def escape_markdown(text: str) -> str:
+    """Escape Markdown special characters in a string to safely include user-provided text in Markdown messages.
+
+    This uses backslash escapes suitable for Telegram's Markdown (and is compatible with MarkdownV2 for common chars).
+    """
+    if not text:
+        return text
+    # Order matters: escape backslash first
+    replacements = [
+        ("\\", "\\\\"),
+        ("_", "\\_"),
+        ("*", "\\*"),
+        ("[", "\\["),
+        ("]", "\\]"),
+        ("(", "\\("),
+        (")", "\\)"),
+        ("`", "\\`"),
+        ("<", "\\<"),
+        (">", "\\>"),
+    ]
+    for old, new in replacements:
+        text = text.replace(old, new)
+    return text
+
 
 def is_moderator(user_id: int) -> bool:
     """Проверка, является ли пользователь модератором (статическая проверка по env)."""
@@ -28,11 +52,11 @@ def format_post_for_moderator(post: Post, user: User) -> str:
 
 Тип: {post_type_name}
 От: User ID: {user.user_id}
-Username: @{user.username or 'не указан'}
+Username: {escape_markdown('@' + (user.username or 'не указан'))}
 Дата: {date_str}
 
 Контент:
-{post.content}"""
+{escape_markdown(post.content or '')}"""
 
 
 def format_user_info(user: User, posts_count: int = None) -> str:
@@ -44,8 +68,8 @@ def format_user_info(user: User, posts_count: int = None) -> str:
     return f"""👤 Информация о пользователе
 
 ID: {user.user_id}
-Username: @{user.username or 'не указан'}
-Имя: {user.first_name or 'не указано'}
+Username: {escape_markdown('@' + (user.username or 'не указан'))}
+Имя: {escape_markdown(user.first_name or 'не указано')}
 Статус: {ban_status}
 Дата регистрации: {reg_date}
 Всего постов: {posts_info}"""
@@ -67,7 +91,6 @@ def format_join_request(req: ChatJoinRequest) -> str:
     return f"""📨 Заявка на вступление в канал
 
 От: User ID: {req.user_id}
-Username: @{req.username or 'не указан'}
-Имя: {req.full_name or 'не указано'}
+Username: {escape_markdown('@' + (req.username or 'не указан'))}
+Имя: {escape_markdown(req.full_name or 'не указано')}
 Дата: {date_str}"""
-
