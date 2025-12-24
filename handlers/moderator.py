@@ -339,7 +339,7 @@ async def receive_rejection_reason(message: Message, state: FSMContext):
 
 
 # --- Редактирование поста модератором ---
-@router.callback_query(F.data.startswith("edit_"))
+@router.callback_query(F.data.regexp(r"^edit_\d+$"))
 @moderator_only
 async def edit_post(callback: CallbackQuery, state: FSMContext):
     """Запрашиваем у модератора новый контент для поста"""
