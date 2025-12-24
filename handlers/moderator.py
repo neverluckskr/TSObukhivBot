@@ -9,7 +9,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest as TgChatJoinRequest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import CHANNEL_ID, MODERATOR_IDS, OWNER_IDS
@@ -22,6 +22,100 @@ from utils.texts import POST_APPROVED_MESSAGE, POST_REJECTED_TEMPLATE
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+def normalize_username(value: str | None) -> str | None:
+    """Очистить username от пробелов и символа @"""
+    if not value:
+        return None
+    username = value.strip()
+    if not username:
+        return None
+    if username.startswith("@"):
+        username = username[1:]
+    return username or None
+
+
+def format_username_display(value: str | None) -> str:
+    """Отформатировать username для отображения"""
+    normalized = normalize_username(value)
+    return f"@{normalized}" if normalized else "@не указан"
+
+
+def format_user_reference(username: str | None, full_name: str | None, user_id: int) -> str:
+    """Красиво показать пользователя по username/full_name"""
+    handle = format_username_display(username)
+    if handle != "@не указан":
+        return handle
+    if full_name:
+        return f"{full_name} (ID: {user_id})"
+    return f"ID: {user_id}"
+
+
+async def get_moderator_profiles():
+    """Вернуть данные о всех модераторах и владельцах"""
+    async for session in get_db():
+        db_mods = (await session.scalars(select(Moderator))).all()
+        db_map = {m.moderator_id: m for m in db_mods}
+        id_pool = set(OWNER_IDS) | set(MODERATOR_IDS) | set(db_map.keys())
+        if id_pool:
+            users = (await session.scalars(select(User).where(User.user_id.in_(id_pool)))).all()
+            user_map = {u.user_id: u for u in users}
+        else:
+            user_map = {}
+
+    profiles = []
+    for mod_id in sorted(id_pool):
+        db_entry = db_map.get(mod_id)
+        username = db_entry.username if db_entry else None
+        if not username and mod_id in user_map:
+            username = user_map[mod_id].username
+        full_name = user_map[mod_id].first_name if mod_id in user_map else None
+        profiles.append(
+            {
+                "id": mod_id,
+                "username": username,
+                "full_name": full_name,
+                "is_owner": mod_id in OWNER_IDS,
+                "has_db_entry": bool(db_entry),
+            }
+        )
+    return profiles
+
+
+async def build_moderator_management_view():
+    """Получить текст и клавиатуру для панели управления модераторами"""
+    profiles = await get_moderator_profiles()
+    lines = [
+        f"{'👑' if p['is_owner'] else '🛡️'} {format_user_reference(p['username'], p.get('full_name'), p['id'])}"
+        for p in profiles
+    ]
+    text = "👥 *Список модераторов:*\n\n" + ("\n".join(lines) if lines else "Пока никто не добавлен.")
+
+    kb_rows = []
+    for profile in profiles:
+        if profile["is_owner"]:
+            continue
+        kb_rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"✏️ Изменить ID {profile['id']}",
+                    callback_data=f"edit_mod_username_{profile['id']}",
+                )
+            ]
+        )
+    kb_rows.append([InlineKeyboardButton(text="➕ Добавить модератора", callback_data="add_moderator")])
+    kb_rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data="moderator_menu")])
+    return text, InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+
+async def notify_owners(bot, text: str, parse_mode: str | None = None):
+    """Уведомить владельцев о действии"""
+    for owner_id in OWNER_IDS:
+        try:
+            await bot.send_message(owner_id, text, parse_mode=parse_mode)
+        except Exception:
+            pass
 
 
 def moderator_only(func):
@@ -276,14 +370,26 @@ async def receive_new_moderator(message: Message, state: FSMContext):
     username = None
     if message.forward_from:
         user_id = message.forward_from.id
-        username = message.forward_from.username
+        username = normalize_username(message.forward_from.username)
     else:
         text = (message.text or "").strip()
-        if text.isdigit():
-            user_id = int(text)
-        else:
-            await message.answer("❌ Укажите числовой user_id или перешлите сообщение от пользователя.")
+        if not text:
+            await message.answer("❌ Отправьте user_id (числом) или @username.")
             return
+        user_id_candidate = None
+        username_candidate = None
+        for token in text.replace(",", " ").split():
+            if token.isdigit() and not user_id_candidate:
+                user_id_candidate = int(token)
+            else:
+                normalized = normalize_username(token)
+                if normalized:
+                    username_candidate = normalized
+        if not user_id_candidate:
+            await message.answer("❌ Укажите числовой user_id (например, 123456789).")
+            return
+        user_id = user_id_candidate
+        username = username_candidate
 
     async for session in get_db():
         existing = await session.get(Moderator, user_id)
@@ -317,6 +423,74 @@ async def receive_new_moderator(message: Message, state: FSMContext):
         pass
 
     await message.answer(f"✅ Пользователь {user_id} добавлен как модератор.")
+    try:
+        text, kb = await build_moderator_management_view()
+        await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        pass
+    await state.clear()
+
+
+@router.message(ModerationStates.waiting_moderator_username)
+@moderator_only
+async def receive_moderator_username(message: Message, state: FSMContext):
+    """Получаем новый username для модератора"""
+    if not is_owner(message.from_user.id):
+        await message.answer("❌ Только владелец может выполнять это действие.")
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    mod_id = data.get("edit_moderator_id")
+    manage_chat_id = data.get("manage_chat_id")
+    manage_message_id = data.get("manage_message_id")
+    if not mod_id:
+        await message.answer("❌ Не удалось определить модератора. Откройте список модераторов заново.")
+        await state.clear()
+        return
+
+    new_username = None
+    if message.forward_from:
+        new_username = normalize_username(message.forward_from.username)
+    else:
+        text = (message.text or "").strip()
+        if text.lower() in {"-", "удалить", "remove", "none"}:
+            new_username = None
+        else:
+            for token in text.replace(",", " ").split():
+                candidate = normalize_username(token)
+                if candidate:
+                    new_username = candidate
+                    break
+
+    if new_username is None and not message.forward_from:
+        await message.answer("❌ Отправьте корректный @username или пересланное сообщение от пользователя.")
+        return
+
+    async for session in get_db():
+        mod = await session.get(Moderator, mod_id)
+        if not mod:
+            mod = Moderator(moderator_id=mod_id, username=new_username)
+            session.add(mod)
+        else:
+            mod.username = new_username
+
+        user = await session.get(User, mod_id)
+        if user:
+            user.username = new_username
+        await session.commit()
+
+    await message.answer(f"✅ Username для модератора {mod_id} обновлён: {format_username_display(new_username)}")
+
+    text, kb = await build_moderator_management_view()
+    if manage_chat_id and manage_message_id:
+        try:
+            await message.bot.edit_message_text(text, manage_chat_id, manage_message_id, reply_markup=kb, parse_mode="Markdown")
+        except Exception:
+            try:
+                await message.bot.send_message(manage_chat_id, text, reply_markup=kb, parse_mode="Markdown")
+            except Exception:
+                pass
     await state.clear()
 
 
@@ -557,24 +731,56 @@ async def moderator_posts(callback: CallbackQuery):
 
 @router.callback_query(F.data == "moderator_add_mods")
 @moderator_only
-async def moderator_add_mods(callback: CallbackQuery):
+async def moderator_add_mods(callback: CallbackQuery, state: FSMContext):
     """Панель управления модераторами (показывает текущих и позволяет добавить)"""
     if not is_owner(callback.from_user.id):
         await callback.answer("❌ Только владелец может управлять модераторами.", show_alert=True)
         return
-
-    async for session in get_db():
-        mods = (await session.scalars(select(Moderator))).all()
-    lines = [f"ID: {m.moderator_id} — @{m.username or 'не указан'}" for m in mods]
-    text = "👥 Список модераторов:\n\n" + ("\n".join(lines) if lines else "Нет модераторов")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить модератора", callback_data="add_moderator")],
-        [InlineKeyboardButton(text="↩️ Назад", callback_data="moderator_page_0")],
-    ])
+    await state.clear()
+    text, kb = await build_moderator_management_view()
     try:
-        await callback.message.edit_text(text, reply_markup=kb)
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
         logger.warning(f"Не удалось показать панель модераторов: {e}")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("edit_mod_username_"))
+@moderator_only
+async def edit_mod_username(callback: CallbackQuery, state: FSMContext):
+    """Запросить новый username для модератора"""
+    if not is_owner(callback.from_user.id):
+        await callback.answer("❌ Только владелец может редактировать модераторов.", show_alert=True)
+        return
+
+    try:
+        mod_id = int(callback.data.split("_")[3])
+    except Exception:
+        await callback.answer("❌ Некорректный модератор.", show_alert=True)
+        return
+
+    await state.update_data(
+        edit_moderator_id=mod_id,
+        manage_chat_id=callback.message.chat.id,
+        manage_message_id=callback.message.message_id,
+    )
+    await state.set_state(ModerationStates.waiting_moderator_username)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↩️ Назад", callback_data="moderator_add_mods")],
+    ])
+    text = (
+        f"✏️ Введите новый username для модератора `{mod_id}`.\n\n"
+        "Можете отправить @username текстом или переслать сообщение пользователя."
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Не удалось запросить username модератора {mod_id}: {e}")
+        await callback.answer("Не удалось запросить username. Попробуйте снова.", show_alert=True)
+        return
+
+    await callback.answer("Отправьте новый username модератора.")
 
 
 @router.callback_query(F.data == "moderator_requests")
@@ -588,7 +794,10 @@ async def moderator_requests(callback: CallbackQuery):
         await callback.answer("📭 Нет заявок на вступление.", show_alert=True)
         return
 
-    lines = [f"ID: {r.id} — User: {r.user_id} — @{r.username or 'не указан'} — {r.created_at.strftime('%d.%m.%Y %H:%M')}" for r in pending]
+    lines = [
+        f"ID: {r.id} — {format_user_reference(r.username, r.full_name, r.user_id)} — {r.created_at.strftime('%d.%m.%Y %H:%M')}"
+        for r in pending
+    ]
     text = "📝 Заявки на вступление (последние):\n\n" + "\n\n".join(lines)
 
     kb_rows = []
@@ -625,7 +834,8 @@ async def handle_chat_join_request(req: TgChatJoinRequest):
         [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"joinreq_approve_{req_id}"), InlineKeyboardButton(text="❌ Отказать", callback_data=f"joinreq_reject_{req_id}")]
     ])
 
-    text = f"📨 Заявка в канал: {user.full_name or user.username or user.id}\nID: {user.id}\nUsername: @{user.username or 'не указан'}"
+    user_reference = format_user_reference(user.username, getattr(user, "full_name", None), user.id)
+    text = f"📨 Заявка в канал: {user_reference}\nID заявки: {req_id}"
 
     for mod_id in mod_ids:
         try:
@@ -670,6 +880,14 @@ async def joinreq_approve(callback: CallbackQuery):
                 await callback.message.edit_text((callback.message.text or "") + f"\n\n✅ Одобрено (Request {req_id})", reply_markup=None)
             except Exception:
                 pass
+
+            moderator_display = format_user_reference(callback.from_user.username, callback.from_user.full_name, callback.from_user.id)
+            user_display = format_user_reference(req.username, req.full_name, req.user_id)
+            await notify_owners(
+                callback.bot,
+                f"✅ *Заявка #{req_id}* — {user_display}\nОдобрил: {moderator_display}",
+                parse_mode="Markdown",
+            )
         except Exception as e:
             logger.error(f"Ошибка при одобрении заявки {req_id}: {e}")
             await callback.answer(f"❌ Ошибка при одобрении: {e}", show_alert=True)
@@ -710,6 +928,14 @@ async def joinreq_reject(callback: CallbackQuery):
                 await callback.message.edit_text((callback.message.text or "") + f"\n\n❌ Отклонено (Request {req_id})", reply_markup=None)
             except Exception:
                 pass
+
+            moderator_display = format_user_reference(callback.from_user.username, callback.from_user.full_name, callback.from_user.id)
+            user_display = format_user_reference(req.username, req.full_name, req.user_id)
+            await notify_owners(
+                callback.bot,
+                f"❌ *Заявка #{req_id}* — {user_display}\nОтклонил: {moderator_display}",
+                parse_mode="Markdown",
+            )
         except Exception as e:
             logger.error(f"Ошибка при отклонении заявки {req_id}: {e}")
             await callback.answer(f"❌ Ошибка при отклонении: {e}", show_alert=True)
@@ -785,7 +1011,7 @@ async def add_moderator(callback: CallbackQuery, state: FSMContext):
 
     await state.set_state(ModerationStates.waiting_new_moderator)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="moderator_page_0")]
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="moderator_add_mods")]
     ])
     try:
         await callback.message.edit_text("➕ Отправьте user_id пользователя или перешлите любое его сообщение, чтобы добавить модератора.", reply_markup=kb)
@@ -1147,7 +1373,8 @@ async def moderator_refresh(callback: CallbackQuery):
 @router.callback_query(F.data == "moderator_stats")
 @moderator_only
 async def moderator_stats_callback(callback: CallbackQuery):
-    """Показать статистику постов и список модераторов"""
+    """Показать статистику постов, пользователей и активность модераторов"""
+    is_owner_user = callback.from_user.id in OWNER_IDS
     async for session in get_db():
         # Статистика по постам
         total_posts = await session.scalar(select(func.count(Post.post_id)))
@@ -1159,20 +1386,97 @@ async def moderator_stats_callback(callback: CallbackQuery):
         total_users = await session.scalar(select(func.count(User.user_id)))
         banned_users = await session.scalar(select(func.count(User.user_id)).filter(User.is_banned == True))
 
-        # Список модераторов и владельцев
-        mod_ids = sorted(set(MODERATOR_IDS + OWNER_IDS))
-        mods = (await session.scalars(select(User).where(User.user_id.in_(mod_ids)))).all()
-        mods_map = {mod.user_id: mod for mod in mods}
+        # Статистика по заявкам
+        total_requests = await session.scalar(select(func.count(ChatJoinRequest.id)))
+        pending_requests = await session.scalar(select(func.count(ChatJoinRequest.id)).filter(ChatJoinRequest.status == "pending"))
+        approved_requests = await session.scalar(select(func.count(ChatJoinRequest.id)).filter(ChatJoinRequest.status == "approved"))
+        rejected_requests = await session.scalar(select(func.count(ChatJoinRequest.id)).filter(ChatJoinRequest.status == "rejected"))
+
+        recent_requests = (
+            await session.scalars(
+                select(ChatJoinRequest)
+                .filter(ChatJoinRequest.status != "pending")
+                .order_by(ChatJoinRequest.handled_at.desc())
+                .limit(5)
+            )
+        ).all()
+
+        moderator_activity = (
+            await session.execute(
+                select(
+                    ChatJoinRequest.moderator_id,
+                    func.count().label("total"),
+                    func.sum(case((ChatJoinRequest.status == "approved", 1), else_=0)).label("approved"),
+                    func.sum(case((ChatJoinRequest.status == "rejected", 1), else_=0)).label("rejected"),
+                )
+                .filter(ChatJoinRequest.status != "pending", ChatJoinRequest.moderator_id.isnot(None))
+                .group_by(ChatJoinRequest.moderator_id)
+                .order_by(func.count().desc())
+                .limit(5)
+            )
+        ).all()
+
+    profiles = await get_moderator_profiles()
+    profiles_map = {p["id"]: p for p in profiles}
 
     mods_section = "👥 *Список модераторов:*\n"
-    if mod_ids:
-        for mod_id in mod_ids:
-            user = mods_map.get(mod_id)
-            username = f"@{user.username}" if user and user.username else "@не указан"
-            role_icon = "👑" if mod_id in OWNER_IDS else "🛡️"
-            mods_section += f"{role_icon} ID: `{mod_id}` — {username}\n"
+    if profiles:
+        for profile in profiles:
+            role_icon = "👑" if profile["is_owner"] else "🛡️"
+            mods_section += f"{role_icon} {format_user_reference(profile['username'], profile.get('full_name'), profile['id'])}\n"
     else:
         mods_section += "— пока пусто\n"
+
+    requests_section = f"""📝 *Заявки:*
+├ Всего: *{total_requests or 0}*
+├ ⏳ В ожидании: *{pending_requests or 0}*
+├ ✅ Одобрено: *{approved_requests or 0}*
+└ ❌ Отклонено: *{rejected_requests or 0}*"""
+
+    owner_section = ""
+    if is_owner_user:
+        activity_lines = []
+        for row in moderator_activity:
+            mod_id = row.moderator_id
+            approved_count = row.approved or 0
+            rejected_count = row.rejected or 0
+            total = row.total or 0
+            profile = profiles_map.get(mod_id)
+            mod_display = format_user_reference(
+                profile["username"] if profile else None,
+                profile.get("full_name") if profile else None,
+                mod_id,
+            ) if mod_id else "—"
+            role_icon = "👑" if profile and profile["is_owner"] else "🛡️"
+            activity_lines.append(
+                f"{role_icon} {mod_display} — ✅ {approved_count} / ❌ {rejected_count} (всего {total})"
+            )
+        if not activity_lines:
+            activity_lines.append("— пока нет обработанных заявок.")
+
+        recent_lines = []
+        for req in recent_requests:
+            status_icon = "✅" if req.status == "approved" else "❌"
+            mod_profile = profiles_map.get(req.moderator_id)
+            mod_display = (
+                format_user_reference(
+                    mod_profile["username"] if mod_profile else None,
+                    mod_profile.get("full_name") if mod_profile else None,
+                    req.moderator_id,
+                )
+                if req.moderator_id
+                else "—"
+            )
+            timestamp = req.handled_at.strftime("%d.%m %H:%M") if req.handled_at else "—"
+            user_display = format_user_reference(req.username, req.full_name, req.user_id)
+            recent_lines.append(f"{status_icon} #{req.id} {user_display} — {mod_display} ({timestamp})")
+        if not recent_lines:
+            recent_lines.append("— пока нет истории.")
+
+        owner_section = (
+            "\n\n🛡️ *Активность модераторов:*\n" + "\n".join(activity_lines) +
+            "\n\n🧾 *Последние заявки:*\n" + "\n".join(recent_lines)
+        )
 
     stats_text = f"""📊 *Статистика*
 
@@ -1186,7 +1490,9 @@ async def moderator_stats_callback(callback: CallbackQuery):
 ├ Всего: *{total_users or 0}*
 └ 🚫 Забанено: *{banned_users or 0}*
 
-{mods_section.strip()}"""
+{requests_section}
+
+{mods_section.strip()}{owner_section}"""
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="moderator_stats")],
