@@ -8,10 +8,11 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
 
 from config import CHANNEL_ID, MODERATOR_IDS
 from database.db import get_db, get_or_create_user, create_post
-from database.models import User
+from database.models import User, Post
 from keyboards.moderator_kb import get_moderation_keyboard
 from keyboards.user_kb import (
     get_main_menu,
@@ -272,6 +273,10 @@ async def receive_free_post(message: Message, state: FSMContext):
             media_file_id,
         )
         
+        # Проверим, сколько постов в ожидании модерации, и добавим кнопку 'Одобрить всех' при необходимости
+        pending_count = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
+        include_approve_all = (pending_count or 0) > 1
+
         # Отправляем модераторам
         sent_to_moderators = False
         for moderator_id in MODERATOR_IDS:
@@ -282,7 +287,7 @@ async def receive_free_post(message: Message, state: FSMContext):
                             moderator_id,
                             media_file_id,
                             caption=format_post_for_moderator(post, user),
-                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
+                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
                         )
                         sent_to_moderators = True
                     elif message.video:
@@ -290,7 +295,7 @@ async def receive_free_post(message: Message, state: FSMContext):
                             moderator_id,
                             media_file_id,
                             caption=format_post_for_moderator(post, user),
-                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
+                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
                         )
                         sent_to_moderators = True
                     else:
@@ -298,14 +303,14 @@ async def receive_free_post(message: Message, state: FSMContext):
                             moderator_id,
                             media_file_id,
                             caption=format_post_for_moderator(post, user),
-                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
+                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
                         )
                         sent_to_moderators = True
                 else:
                     await bot.send_message(
                         moderator_id,
                         format_post_for_moderator(post, user),
-                        reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
+                        reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
                     )
                     sent_to_moderators = True
             except Exception as e:
@@ -358,6 +363,10 @@ async def receive_ad_post(message: Message, state: FSMContext):
             media_file_id,
         )
         
+        # Проверим, сколько постов в ожидании модерации, и добавим кнопку 'Одобрить всех' при необходимости
+        pending_count = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
+        include_approve_all = (pending_count or 0) > 1
+
         # Отправляем модераторам
         sent_to_moderators = False
         for moderator_id in MODERATOR_IDS:
@@ -368,7 +377,7 @@ async def receive_ad_post(message: Message, state: FSMContext):
                             moderator_id,
                             media_file_id,
                             caption=format_post_for_moderator(post, user),
-                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
+                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
                         )
                         sent_to_moderators = True
                     elif message.video:
@@ -376,7 +385,7 @@ async def receive_ad_post(message: Message, state: FSMContext):
                             moderator_id,
                             media_file_id,
                             caption=format_post_for_moderator(post, user),
-                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
+                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
                         )
                         sent_to_moderators = True
                     else:
@@ -384,14 +393,14 @@ async def receive_ad_post(message: Message, state: FSMContext):
                             moderator_id,
                             media_file_id,
                             caption=format_post_for_moderator(post, user),
-                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
+                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
                         )
                         sent_to_moderators = True
                 else:
                     await bot.send_message(
                         moderator_id,
                         format_post_for_moderator(post, user),
-                        reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
+                        reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
                     )
                     sent_to_moderators = True
             except Exception as e:
@@ -444,6 +453,10 @@ async def receive_offtopic_post(message: Message, state: FSMContext):
             media_file_id,
         )
         
+        # Проверим, сколько постов в ожидании модерации, и добавим кнопку 'Одобрить всех' при необходимости
+        pending_count = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
+        include_approve_all = (pending_count or 0) > 1
+
         # Отправляем модераторам
         sent_to_moderators = False
         for moderator_id in MODERATOR_IDS:
@@ -454,7 +467,7 @@ async def receive_offtopic_post(message: Message, state: FSMContext):
                             moderator_id,
                             media_file_id,
                             caption=format_post_for_moderator(post, user),
-                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
+                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
                         )
                         sent_to_moderators = True
                     elif message.video:
@@ -462,7 +475,7 @@ async def receive_offtopic_post(message: Message, state: FSMContext):
                             moderator_id,
                             media_file_id,
                             caption=format_post_for_moderator(post, user),
-                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
+                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
                         )
                         sent_to_moderators = True
                     else:
@@ -470,14 +483,14 @@ async def receive_offtopic_post(message: Message, state: FSMContext):
                             moderator_id,
                             media_file_id,
                             caption=format_post_for_moderator(post, user),
-                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
+                            reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
                         )
                         sent_to_moderators = True
                 else:
                     await bot.send_message(
                         moderator_id,
                         format_post_for_moderator(post, user),
-                        reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id),
+                        reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
                     )
                     sent_to_moderators = True
             except Exception as e:

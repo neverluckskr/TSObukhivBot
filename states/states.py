@@ -22,4 +22,6 @@ class ModerationStates(StatesGroup):
     """Состояния для модерации"""
     # Ожидание причины отказа от модератора
     waiting_rejection_reason = State()
+    # Ожидание отредактированного контента от модератора
+    waiting_edit_content = State()
 
