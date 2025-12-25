@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
-from config import settings
+from config import settings, MODERATOR_IDS
 from database.db import init_db
 from handlers import moderator_router, payments_router, user_router
 
@@ -83,6 +83,9 @@ async def ping_keepalive():
 async def main():
     """Главная функция"""
     logger.info("Запуск бота...")
+
+    if not MODERATOR_IDS:
+        logger.warning("Список модераторов пуст (MODERATORS не настроен). Владелец(и) будут уведомлены о проблемах с доставкой постов.")
     
     # Инициализация БД (путь к БД настраивается в database/db.py)
     try:

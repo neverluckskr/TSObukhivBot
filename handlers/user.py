@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
 
-from config import CHANNEL_ID, MODERATOR_IDS
+from config import CHANNEL_ID, MODERATOR_IDS, OWNER_IDS
 from database.db import get_db, get_or_create_user, create_post
 from database.models import User, Post
 from keyboards.moderator_kb import get_moderation_keyboard
@@ -277,9 +277,12 @@ async def receive_free_post(message: Message, state: FSMContext):
         pending_count = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
         include_approve_all = (pending_count or 0) > 1
 
-        # Отправляем модераторам
+        # Отправляем модераторам (или владельцам, если список модераторов пуст)
+        recipient_ids = MODERATOR_IDS or OWNER_IDS
+        if not MODERATOR_IDS:
+            logger.warning("Список модераторов пуст, уведомляю владельцев вместо модераторов.")
         sent_to_moderators = False
-        for moderator_id in MODERATOR_IDS:
+        for moderator_id in recipient_ids:
             try:
                 if media_file_id:
                     if message.photo:
@@ -317,7 +320,17 @@ async def receive_free_post(message: Message, state: FSMContext):
                 logger.warning(f"Не удалось отправить пост модератору {moderator_id}: {e}")
         
         if not sent_to_moderators:
-            logger.error("Не удалось отправить пост ни одному модератору!")
+            logger.error("Не удалось отправить пост ни одному модератору/владельцу!")
+            # Уведомим владельцев вручную, чтобы они могли принять меры
+            for owner_id in OWNER_IDS:
+                try:
+                    await bot.send_message(
+                        owner_id,
+                        f"⚠️ Не удалось доставить пост модераторам, посмотри вручную:\n\n{format_post_for_moderator(post, user)}",
+                        reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
+                    )
+                except Exception as e:
+                    logger.warning(f"Не удалось отправить уведомление владельцу {owner_id}: {e}")
     
     await message.answer(POST_SENT_MESSAGE)
     await state.clear()
@@ -367,9 +380,12 @@ async def receive_ad_post(message: Message, state: FSMContext):
         pending_count = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
         include_approve_all = (pending_count or 0) > 1
 
-        # Отправляем модераторам
+        # Отправляем модераторам (или владельцам, если список модераторов пуст)
+        recipient_ids = MODERATOR_IDS or OWNER_IDS
+        if not MODERATOR_IDS:
+            logger.warning("Список модераторов пуст, уведомляю владельцев вместо модераторов.")
         sent_to_moderators = False
-        for moderator_id in MODERATOR_IDS:
+        for moderator_id in recipient_ids:
             try:
                 if media_file_id:
                     if message.photo:
@@ -407,7 +423,17 @@ async def receive_ad_post(message: Message, state: FSMContext):
                 logger.warning(f"Не удалось отправить пост модератору {moderator_id}: {e}")
         
         if not sent_to_moderators:
-            logger.error("Не удалось отправить пост ни одному модератору!")
+            logger.error("Не удалось отправить пост ни одному модератору/владельцу!")
+            # Уведомим владельцев вручную, чтобы они могли принять меры
+            for owner_id in OWNER_IDS:
+                try:
+                    await bot.send_message(
+                        owner_id,
+                        f"⚠️ Не удалось доставить пост модераторам, посмотри вручную:\n\n{format_post_for_moderator(post, user)}",
+                        reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
+                    )
+                except Exception as e:
+                    logger.warning(f"Не удалось отправить уведомление владельцу {owner_id}: {e}")
     
     await message.answer(POST_SENT_MESSAGE)
     await state.clear()
@@ -457,9 +483,12 @@ async def receive_offtopic_post(message: Message, state: FSMContext):
         pending_count = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
         include_approve_all = (pending_count or 0) > 1
 
-        # Отправляем модераторам
+        # Отправляем модераторам (или владельцам, если список модераторов пуст)
+        recipient_ids = MODERATOR_IDS or OWNER_IDS
+        if not MODERATOR_IDS:
+            logger.warning("Список модераторов пуст, уведомляю владельцев вместо модераторов.")
         sent_to_moderators = False
-        for moderator_id in MODERATOR_IDS:
+        for moderator_id in recipient_ids:
             try:
                 if media_file_id:
                     if message.photo:
@@ -497,7 +526,17 @@ async def receive_offtopic_post(message: Message, state: FSMContext):
                 logger.warning(f"Не удалось отправить пост модератору {moderator_id}: {e}")
         
         if not sent_to_moderators:
-            logger.error("Не удалось отправить пост ни одному модератору!")
+            logger.error("Не удалось отправить пост ни одному модератору/владельцу!")
+            # Уведомим владельцев вручную, чтобы они могли принять меры
+            for owner_id in OWNER_IDS:
+                try:
+                    await bot.send_message(
+                        owner_id,
+                        f"⚠️ Не удалось доставить пост модераторам, посмотри вручную:\n\n{format_post_for_moderator(post, user)}",
+                        reply_markup=get_moderation_keyboard(post.post_id, message.from_user.id, include_approve_all=include_approve_all),
+                    )
+                except Exception as e:
+                    logger.warning(f"Не удалось отправить уведомление владельцу {owner_id}: {e}")
     
     await message.answer(POST_SENT_MESSAGE)
     await state.clear()
