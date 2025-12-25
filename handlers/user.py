@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 
 from config import CHANNEL_ID, MODERATOR_IDS, OWNER_IDS
 from database.db import get_db, get_or_create_user, create_post
-from database.models import User, Post
+from database.models import User, Post, Moderator
 from keyboards.moderator_kb import get_moderation_keyboard
 from keyboards.user_kb import (
     get_main_menu,
@@ -277,10 +277,12 @@ async def receive_free_post(message: Message, state: FSMContext):
         pending_count = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
         include_approve_all = (pending_count or 0) > 1
 
-        # Отправляем модераторам (или владельцам, если список модераторов пуст)
-        recipient_ids = MODERATOR_IDS or OWNER_IDS
-        if not MODERATOR_IDS:
-            logger.warning("Список модераторов пуст, уведомляю владельцев вместо модераторов.")
+        # Собираем всех получателей: env-модераторы + модераторы из БД + владельцы
+        db_mod_ids = (await session.scalars(select(Moderator.moderator_id))).all()
+        recipient_ids = set(MODERATOR_IDS) | set(db_mod_ids) | set(OWNER_IDS)
+        if not recipient_ids:
+            logger.warning("Ни одна роль модератора не настроена: ни env, ни в БД. Уведомляю владельцев (OWNER_IDS).")
+            recipient_ids = set(OWNER_IDS)
         sent_to_moderators = False
         for moderator_id in recipient_ids:
             try:
@@ -380,10 +382,12 @@ async def receive_ad_post(message: Message, state: FSMContext):
         pending_count = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
         include_approve_all = (pending_count or 0) > 1
 
-        # Отправляем модераторам (или владельцам, если список модераторов пуст)
-        recipient_ids = MODERATOR_IDS or OWNER_IDS
-        if not MODERATOR_IDS:
-            logger.warning("Список модераторов пуст, уведомляю владельцев вместо модераторов.")
+        # Собираем всех получателей: env-модераторы + модераторы из БД + владельцы
+        db_mod_ids = (await session.scalars(select(Moderator.moderator_id))).all()
+        recipient_ids = set(MODERATOR_IDS) | set(db_mod_ids) | set(OWNER_IDS)
+        if not recipient_ids:
+            logger.warning("Ни одна роль модератора не настроена: ни env, ни в БД. Уведомляю владельцев (OWNER_IDS).")
+            recipient_ids = set(OWNER_IDS)
         sent_to_moderators = False
         for moderator_id in recipient_ids:
             try:
@@ -483,10 +487,12 @@ async def receive_offtopic_post(message: Message, state: FSMContext):
         pending_count = await session.scalar(select(func.count(Post.post_id)).filter(Post.status == "pending"))
         include_approve_all = (pending_count or 0) > 1
 
-        # Отправляем модераторам (или владельцам, если список модераторов пуст)
-        recipient_ids = MODERATOR_IDS or OWNER_IDS
-        if not MODERATOR_IDS:
-            logger.warning("Список модераторов пуст, уведомляю владельцев вместо модераторов.")
+        # Собираем всех получателей: env-модераторы + модераторы из БД + владельцы
+        db_mod_ids = (await session.scalars(select(Moderator.moderator_id))).all()
+        recipient_ids = set(MODERATOR_IDS) | set(db_mod_ids) | set(OWNER_IDS)
+        if not recipient_ids:
+            logger.warning("Ни одна роль модератора не настроена: ни env, ни в БД. Уведомляю владельцев (OWNER_IDS).")
+            recipient_ids = set(OWNER_IDS)
         sent_to_moderators = False
         for moderator_id in recipient_ids:
             try:

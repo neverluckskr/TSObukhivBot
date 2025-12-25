@@ -34,8 +34,11 @@ def escape_markdown(text: str) -> str:
 
 
 def is_moderator(user_id: int) -> bool:
-    """Проверка, является ли пользователь модератором (статическая проверка по env)."""
-    return user_id in MODERATOR_IDS
+    """Проверка, является ли пользователь модератором по env-списку или владельцем.
+
+    Заметь: динамически добавляемых модераторов из БД проверяет декоратор `moderator_only`.
+    """
+    return user_id in MODERATOR_IDS or user_id in OWNER_IDS
 
 
 def is_owner(user_id: int) -> bool:

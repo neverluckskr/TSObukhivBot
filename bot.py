@@ -11,6 +11,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
 from config import settings, MODERATOR_IDS
+from sqlalchemy import select, func
+from database.models import Moderator
 from database.db import init_db
 from handlers import moderator_router, payments_router, user_router
 
@@ -94,6 +96,16 @@ async def main():
     except Exception as e:
         logger.error(f"Ошибка инициализации БД: {e}")
         return
+
+    # Проверим есть ли в БД добавленные модераторы (если в env не заданы модераторы)
+    if not MODERATOR_IDS:
+        from database.db import get_db
+        async for session in get_db():
+            db_count = await session.scalar(select(func.count(Moderator.moderator_id)))
+            if not db_count:
+                logger.warning("Список модераторов не настроен ни через env (MODERATORS), ни через панель модераторов в боте. Убедитесь, что добавлены модераторы.")
+            else:
+                logger.info(f"Найдено {db_count} модераторов в базе данных; они будут получать уведомления о постах.")
     
     # Регистрация роутеров
     dp.include_router(user_router)
